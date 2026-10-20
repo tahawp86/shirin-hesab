@@ -24,5 +24,5 @@ export function todayIso(): string {
 }
 
 export function fmtMoney(n: number): string {
-  return n.toLocaleString("fa-IR") + " تومان";
+  return n.toLocaleString("fa-IR") + " ریال";
 }

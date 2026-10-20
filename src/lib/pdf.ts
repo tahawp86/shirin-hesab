@@ -123,7 +123,7 @@ export async function renderInvoiceCanvas(data: InvoicePdfData): Promise<HTMLCan
     { w: 0, align: "right" as const, title: "شرح کالا" }, // عرض انعطاف‌پذیر
     { w: 120, align: "center" as const, title: "تعداد" },
     { w: 235, align: "center" as const, title: "قیمت واحد" },
-    { w: 255, align: "center" as const, title: "مبلغ (تومان)" },
+    { w: 255, align: "center" as const, title: "مبلغ (ریال)" },
   ];
   const fixedW = cols.reduce((s, c) => s + c.w, 0);
   cols[1].w = tableW - fixedW;
@@ -198,7 +198,7 @@ export async function renderInvoiceCanvas(data: InvoicePdfData): Promise<HTMLCan
   ctx.textAlign = "right";
   ctx.fillText("جمع کل:", ranges[1].x1 - 18, y + totalRowH / 2);
   ctx.textAlign = "center";
-  ctx.fillText(faGrouped(grand) + " تومان", cellX(ranges[4]), y + totalRowH / 2);
+  ctx.fillText(faGrouped(grand) + " ریال", cellX(ranges[4]), y + totalRowH / 2);
   ctx.strokeStyle = ACCENT;
   ctx.lineWidth = 3;
   ctx.beginPath();

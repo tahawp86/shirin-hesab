@@ -49,6 +49,8 @@ export const api = {
 
   // موتور به‌روزرسانی (بک‌اند: EAgent1) — قرارداد ثابت با رابط کاربری update-ui.ts
   checkUpdate: (): Promise<UpdateInfo | null> => invoke("check_update"),
+  openUpdateFileDialog: (): Promise<string | null> => invoke("open_update_file_dialog"),
+  applyLocalUpdate: (path: string): Promise<void> => invoke("apply_local_update", { path }),
   downloadAndApplyUpdate: (): Promise<void> => invoke("download_and_apply_update"),
   cancelUpdateDownload: (): Promise<void> => invoke("cancel_update_download"),
   getUpdateReport: (): Promise<UpdateReport | null> => invoke("get_update_report"),

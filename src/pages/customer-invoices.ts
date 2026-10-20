@@ -59,7 +59,7 @@ ${STYLE}
   <div class="card">
     <h3 style="margin-top:0">ثبت پرداخت</h3>
     <form class="ci-pay-form" id="ci-pay-form">
-      <label>مبلغ (تومان)
+      <label>مبلغ (ریال)
         <input type="text" id="ci-pay-amount" inputmode="numeric" placeholder="مثلاً ۱۵۰٬۰۰۰" autocomplete="off" />
       </label>
       <label>توضیح

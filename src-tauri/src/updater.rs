@@ -157,6 +157,38 @@ pub async fn check_update() -> Option<UpdateInfo> {
         .flatten()
 }
 
+// ---------- بارگذاری دستی فایل آپدیت ----------
+
+/// دیالوگ انتخاب فایل آپدیت (ZIP) برای بارگذاری دستی
+#[tauri::command]
+pub fn open_update_file_dialog(app: AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::{DialogExt, FilePath};
+    let picked = app
+        .dialog()
+        .file()
+        .add_filter("بسته‌ی آپدیت", &["zip"])
+        .blocking_pick_file();
+    Ok(match picked {
+        Some(FilePath::Path(p)) => Some(p.to_string_lossy().into_owned()),
+        _ => None,
+    })
+}
+
+/// اعمال آپدیت از فایل محلی (بارگذاری دستی): اعتبارسنجی بسته + استخراج + اجرای موتور.
+/// موفقیت = برنامه بسته و موتور آپدیت اجرا می‌شود (مثل مسیر دانلود).
+#[tauri::command]
+pub fn apply_local_update(app: AppHandle, path: String) -> Result<(), String> {
+    let zip_path = PathBuf::from(&path);
+    if !zip_path.is_file() {
+        return Err("فایل آپدیت پیدا نشد".to_string());
+    }
+    validate_update_zip(&zip_path)?;
+    let dir = exe_dir().ok_or("مسیر نصب پیدا نشد")?;
+    extract_update(&zip_path, &dir.join("pending_update"))?;
+    launch_engine(&app)?;
+    Ok(())
+}
+
 // ---------- دانلود و اعمال ----------
 
 /// وضعیت دانلود آپدیت (برای کنسل از فرانت)

@@ -73,7 +73,7 @@ export function renderProducts(root: HTMLElement): void {
         }
         <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
           <input id="p-name" placeholder="نام محصول" value="${esc(draftName)}" />
-          <input id="p-price" placeholder="قیمت واحد (تومان)" inputmode="numeric" value="${esc(draftPrice)}" />
+          <input id="p-price" placeholder="قیمت واحد (ریال)" inputmode="numeric" value="${esc(draftPrice)}" />
           <button class="btn" id="p-save">${editingId === null ? "افزودن" : "ذخیره"}</button>
           ${
             editingId !== null

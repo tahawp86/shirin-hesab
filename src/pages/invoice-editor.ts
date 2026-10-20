@@ -130,8 +130,8 @@ async function initEditor(root: HTMLElement, customer: Customer, invoice?: Invoi
     <table>
       <thead><tr>
         <th class="c" style="width:56px">ردیف</th><th>کالا / شرح</th>
-        <th class="c" style="width:110px">تعداد</th><th class="c" style="width:200px">قیمت واحد (تومان)</th>
-        <th class="c" style="width:200px">جمع (تومان)</th><th class="c" style="width:90px">عملیات</th>
+        <th class="c" style="width:110px">تعداد</th><th class="c" style="width:200px">قیمت واحد (ریال)</th>
+        <th class="c" style="width:200px">جمع (ریال)</th><th class="c" style="width:90px">عملیات</th>
       </tr></thead>
       <tbody id="invRows"></tbody>
     </table>
@@ -158,7 +158,7 @@ async function initEditor(root: HTMLElement, customer: Customer, invoice?: Invoi
         (p) =>
           `<option value="${p.id}"${p.id === selectedId ? " selected" : ""}>${escapeHtml(p.name)} — ${faNum(
             p.unit_price
-          )} تومان</option>`
+          )} ریال</option>`
       )
       .join("");
     return `<option value="">— انتخاب محصول —</option>${opts}`;
@@ -180,7 +180,7 @@ async function initEditor(root: HTMLElement, customer: Customer, invoice?: Invoi
       <td class="c">${num}</td>
       <td><select class="p-sel" data-key="${r.key}">${productOptions(r.productId)}</select></td>
       <td class="c"><input type="number" class="p-qty" data-key="${r.key}" min="1" value="${r.qty}"></td>
-      <td class="c"><span class="p-unit" data-unit="${r.key}">${r.productId ? faNum(r.unitPrice) + " تومان" : "—"}</span></td>
+      <td class="c"><span class="p-unit" data-unit="${r.key}">${r.productId ? faNum(r.unitPrice) + " ریال" : "—"}</span></td>
       <td class="c"><span class="p-sum" data-sum="${r.key}">${fmtMoney(rowTotal(r))}</span></td>
       <td class="c">${del}</td></tr>`;
   }
@@ -218,7 +218,7 @@ async function initEditor(root: HTMLElement, customer: Customer, invoice?: Invoi
       row.unitPrice = 0;
     }
     const unitEl = tbody.querySelector(`[data-unit="${key}"]`);
-    if (unitEl) unitEl.textContent = row.productId ? faNum(row.unitPrice) + " تومان" : "—";
+    if (unitEl) unitEl.textContent = row.productId ? faNum(row.unitPrice) + " ریال" : "—";
     refreshRow(row);
   });
 

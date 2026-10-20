@@ -53,6 +53,8 @@ fn main() {
             db::get_update_notified_version,
             db::set_update_notified_version,
             updater::check_update,
+            updater::open_update_file_dialog,
+            updater::apply_local_update,
             updater::download_and_apply_update,
             updater::cancel_update_download,
             updater::get_update_report,

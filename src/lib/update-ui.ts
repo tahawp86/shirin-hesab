@@ -363,6 +363,13 @@ export function renderUpdateSettings(container: HTMLElement): void {
         <button class="btn" id="upd-check-now">بررسی الآن</button>
         <span id="upd-check-status" style="color: var(--muted); font-size: 13px;"></span>
       </div>
+      <div style="display: flex; align-items: center; gap: 10px; margin-top: 12px;">
+        <button class="btn ghost" id="upd-manual">بارگذاری دستی فایل آپدیت</button>
+        <span id="upd-manual-status" style="color: var(--muted); font-size: 13px;"></span>
+      </div>
+      <p style="color: var(--muted); font-size: 13px; margin: 8px 0 0; line-height: 1.9;">
+        اگر فایل آپدیت (ZIP) را دستی دریافت کرده‌اید، از این‌جا انتخابش کنید؛ برنامه سالم‌بودنش را بررسی می‌کند، نصبش می‌کند و دوباره باز می‌شود.
+      </p>
     </div>`;
 
   const toggle = container.querySelector<HTMLInputElement>("#upd-auto-toggle")!;
@@ -391,6 +398,51 @@ export function renderUpdateSettings(container: HTMLElement): void {
     void manualCheckUpdate(status).finally(() => {
       checkBtn.disabled = false;
     });
+  });
+
+  const manualBtn = container.querySelector<HTMLButtonElement>("#upd-manual")!;
+  const manualStatus = container.querySelector<HTMLElement>("#upd-manual-status")!;
+
+  manualBtn.addEventListener("click", () => {
+    void (async () => {
+      manualStatus.textContent = "";
+      let path: string | null;
+      try {
+        path = await api.openUpdateFileDialog();
+      } catch (e) {
+        manualStatus.textContent = "خطا در باز کردن انتخاب فایل: " + errMsg(e);
+        return;
+      }
+      if (!path) return; // کاربر لغو کرد
+      const fileName = path.split(/[\\/]/).pop() ?? path;
+      const overlay = openDialog(`
+        <h3>⬆️ نصب آپدیت از فایل</h3>
+        <p>فایل «${esc(fileName)}» بررسی و نصب می‌شود؛ برنامه بسته و دوباره باز می‌شود. ادامه می‌دهید؟</p>
+        <div class="upd-actions">
+          <button class="btn" id="upd-local-yes">بله، نصب شود</button>
+          <button class="btn ghost" id="upd-local-no">خیر</button>
+        </div>`);
+      overlay.querySelector("#upd-local-no")!.addEventListener("click", closeDialog);
+      overlay.querySelector("#upd-local-yes")!.addEventListener("click", () => {
+        void (async () => {
+          try {
+            await api.applyLocalUpdate(path!);
+            // موفقیت: برنامه بسته و موتور آپدیت اجرا می‌شود
+            closeDialog();
+            manualStatus.textContent = "در حال نصب آپدیت…";
+          } catch (e) {
+            const overlay2 = openDialog(`
+              <h3>⚠️ خطا در نصب آپدیت</h3>
+              <p class="upd-error">فایل آپدیت قابل نصب نیست:</p>
+              <div class="upd-notes">${esc(errMsg(e))}</div>
+              <div class="upd-actions">
+                <button class="btn" id="upd-local-err-close">بستن</button>
+              </div>`);
+            overlay2.querySelector("#upd-local-err-close")!.addEventListener("click", closeDialog);
+          }
+        })();
+      });
+    })();
   });
 }
 

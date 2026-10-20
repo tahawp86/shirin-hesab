@@ -123,7 +123,7 @@ CREATE TABLE IF NOT EXISTS settings (
 pub fn init_db(app: &AppHandle) -> Result<Connection, Box<dyn std::error::Error>> {
     let dir = app.path().app_data_dir()?;
     std::fs::create_dir_all(&dir)?;
-    let conn = Connection::open(dir.join("shirin-hesab.db"))?;
+    let mut conn = Connection::open(dir.join("shirin-hesab.db"))?;
     conn.execute_batch(SCHEMA)?;
     // مایگریشن: حذف ستون rolled_into (منطق تجمیع کاملاً حذف شد)
     let has_col: bool = conn.query_row(
@@ -133,6 +133,26 @@ pub fn init_db(app: &AppHandle) -> Result<Connection, Box<dyn std::error::Error>
     )?;
     if has_col {
         conn.execute("ALTER TABLE invoices DROP COLUMN rolled_into", [])?;
+    }
+    // مهاجرت یک‌باره‌ی تومان → ریال (از نسخه 0.4.1): همه‌ی مبالغ ذخیره‌شده ×۱۰
+    // گارد: کلید currency_rial_migrated در settings — داخل تراکنش (همه یا هیچ)
+    let rial_done: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM settings WHERE key = 'currency_rial_migrated' AND value = '1'",
+        [],
+        |r| r.get(0),
+    )?;
+    if !rial_done {
+        let tx = conn.transaction()?;
+        tx.execute("UPDATE products SET unit_price = unit_price * 10", [])?;
+        tx.execute("UPDATE invoice_items SET unit_price = unit_price * 10", [])?;
+        tx.execute("UPDATE invoices SET paid_amount = paid_amount * 10", [])?;
+        tx.execute("UPDATE payments SET amount = amount * 10", [])?;
+        tx.execute(
+            "INSERT INTO settings (key, value) VALUES ('currency_rial_migrated', '1') \
+             ON CONFLICT(key) DO UPDATE SET value = '1'",
+            [],
+        )?;
+        tx.commit()?;
     }
     Ok(conn)
 }
