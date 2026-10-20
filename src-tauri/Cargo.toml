@@ -1,6 +1,6 @@
 [package]
 name = "shirin-hesab"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 description = "شیرین حساب — مدیریت حساب فروشگاه کیک و شیرینی"
 
@@ -16,6 +16,17 @@ serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 chrono = "0.4"
 base64 = "0.22"
+# موتور آپدیت
+ureq = "2"
+zip = "2"
+sha2 = "0.10"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [features]
 default = ["custom-protocol"]

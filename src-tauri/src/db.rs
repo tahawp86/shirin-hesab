@@ -184,8 +184,9 @@ fn status_of(total: f64, paid_amount: f64) -> String {
 }
 
 fn summary_for(conn: &Connection, customer_id: i64) -> Result<Summary, String> {
-    // جمع کل فاکتورها (فقط برای نمایش)
-    let total_invoiced: f64 = conn
+    // جمع کل فاکتورها (برای نمایش) — آیتم‌های «مانده حساب قبلی» جزوش نیستند،
+    // وگرنه بدهی قبلی دوبار شمرده می‌شود (یک بار در فاکتور خودش، یک بار در فاکتور جدید)
+    let total_all: f64 = conn
         .query_row(
             "SELECT COALESCE(SUM(it.unit_price * it.qty), 0) \
              FROM invoice_items it JOIN invoices i ON i.id = it.invoice_id \
@@ -194,7 +195,6 @@ fn summary_for(conn: &Connection, customer_id: i64) -> Result<Summary, String> {
             |r| r.get(0),
         )
         .map_err(|e| e.to_string())?;
-    // جمع آیتم‌های «مانده حساب قبلی» — بدهی واقعی = فاکتورها منهای این آیتم‌ها
     let balance_total: f64 = conn
         .query_row(
             "SELECT COALESCE(SUM(it.unit_price * it.qty), 0) \
@@ -204,6 +204,7 @@ fn summary_for(conn: &Connection, customer_id: i64) -> Result<Summary, String> {
             |r| r.get(0),
         )
         .map_err(|e| e.to_string())?;
+    let total_invoiced = total_all - balance_total;
     // جمع پرداخت‌های ثبت‌شده‌ی مشتری
     let total_paid: f64 = conn
         .query_row(
@@ -212,11 +213,39 @@ fn summary_for(conn: &Connection, customer_id: i64) -> Result<Summary, String> {
             |r| r.get(0),
         )
         .map_err(|e| e.to_string())?;
-    let total_charges = total_invoiced - balance_total;
+    // بدهکاری = جمع «پرداخت‌نشده»‌ی فاکتورها، فاکتوربه‌فاکتور (منفی نمی‌شود):
+    // برای هر فاکتور: ‎max(0, (جمع فاکتور − آیتم‌های «مانده حساب قبلی») − paid_amount)‎
+    let debt: f64 = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT i.paid_amount, \
+                        COALESCE(SUM(it.unit_price * it.qty), 0), \
+                        COALESCE(SUM(CASE WHEN it.name = ?2 THEN it.unit_price * it.qty ELSE 0 END), 0) \
+                 FROM invoices i LEFT JOIN invoice_items it ON it.invoice_id = i.id \
+                 WHERE i.customer_id = ?1 \
+                 GROUP BY i.id",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![customer_id, BALANCE_ITEM_NAME], |r| {
+                Ok((
+                    r.get::<_, f64>(0)?,
+                    r.get::<_, f64>(1)?,
+                    r.get::<_, f64>(2)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut d = 0.0;
+        for row in rows {
+            let (paid, total, balance) = row.map_err(|e| e.to_string())?;
+            d += ((total - balance) - paid).max(0.0);
+        }
+        d
+    };
     Ok(Summary {
         total_invoiced,
         total_paid,
-        debt: total_charges - total_paid,
+        debt,
     })
 }
 
@@ -548,7 +577,7 @@ pub fn customer_summary(
 
 // ---------- اطلاعات قناد ----------
 
-fn get_setting(conn: &Connection, key: &str) -> Result<String, String> {
+fn read_setting_opt(conn: &Connection, key: &str) -> Result<Option<String>, String> {
     let mut stmt = conn
         .prepare("SELECT value FROM settings WHERE key = ?1")
         .map_err(|e| e.to_string())?;
@@ -556,17 +585,45 @@ fn get_setting(conn: &Connection, key: &str) -> Result<String, String> {
         .query_map(params![key], |r| r.get::<_, String>(0))
         .map_err(|e| e.to_string())?;
     match rows.next() {
-        Some(r) => r.map_err(|e| e.to_string()),
-        None => Ok(String::new()),
+        Some(r) => r.map(Some).map_err(|e| e.to_string()),
+        None => Ok(None),
     }
+}
+
+fn read_setting(conn: &Connection, key: &str) -> Result<String, String> {
+    Ok(read_setting_opt(conn, key)?.unwrap_or_default())
+}
+
+fn write_setting(conn: &Connection, key: &str, value: &str) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?1, ?2) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![key, value],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// خواندن مستقیم یک کلید از جدول settings (قرارداد فرانت) — نبودِ کلید = null
+#[tauri::command]
+pub fn get_setting(state: State<'_, DbState>, key: String) -> Result<Option<String>, String> {
+    let conn = lock(&state)?;
+    read_setting_opt(&conn, &key)
+}
+
+/// نوشتن مستقیم یک کلید در جدول settings (قرارداد فرانت)
+#[tauri::command]
+pub fn set_setting(state: State<'_, DbState>, key: String, value: String) -> Result<(), String> {
+    let conn = lock(&state)?;
+    write_setting(&conn, &key, &value)
 }
 
 #[tauri::command]
 pub fn get_confectioner_info(state: State<'_, DbState>) -> Result<ConfectionerInfo, String> {
     let conn = lock(&state)?;
     Ok(ConfectionerInfo {
-        name: get_setting(&conn, "confectioner_name")?,
-        phone: get_setting(&conn, "confectioner_phone")?,
+        name: read_setting(&conn, "confectioner_name")?,
+        phone: read_setting(&conn, "confectioner_phone")?,
     })
 }
 
@@ -590,6 +647,38 @@ pub fn set_confectioner_info(
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// ---------- تنظیمات آپدیت خودکار ----------
+
+/// چک خودکار آپدیت در استارت — پیش‌فرض روشن
+#[tauri::command]
+pub fn get_auto_update_check(state: State<'_, DbState>) -> Result<bool, String> {
+    let conn = lock(&state)?;
+    let v = read_setting(&conn, "auto_update_check")?;
+    Ok(v != "false" && v != "0")
+}
+
+#[tauri::command]
+pub fn set_auto_update_check(state: State<'_, DbState>, enabled: bool) -> Result<(), String> {
+    let conn = lock(&state)?;
+    write_setting(&conn, "auto_update_check", if enabled { "true" } else { "false" })
+}
+
+/// آخرین نسخه‌ای که به کاربر اطلاع داده شده (ضداسپم)
+#[tauri::command]
+pub fn get_update_notified_version(state: State<'_, DbState>) -> Result<String, String> {
+    let conn = lock(&state)?;
+    read_setting(&conn, "update_notified_version")
+}
+
+#[tauri::command]
+pub fn set_update_notified_version(
+    state: State<'_, DbState>,
+    version: String,
+) -> Result<(), String> {
+    let conn = lock(&state)?;
+    write_setting(&conn, "update_notified_version", &version)
 }
 
 // ---------- خروجی PDF ----------

@@ -42,9 +42,13 @@
         "type": "embedBootstrapper",
         "silent": true
       }
+    },
+    "resources": {
+      "../version.txt": "version.txt",
+      "../CHANGELOG_FA.md": "CHANGELOG_FA.md"
     }
   },
   "identifier": "ir.shirinhesab.app",
   "productName": "ShirinHesab",
-  "version": "0.3.0"
+  "version": "0.4.0"
 }

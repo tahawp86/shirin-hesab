@@ -20,6 +20,8 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - name: Resolve build run id
         id: resolve
         run: |
@@ -33,7 +35,7 @@ jobs:
           echo "run_id=$RID" >> "$GITHUB_OUTPUT"
           echo "Using run $RID"
 
-      - name: Download setup artifact
+      - name: Download build artifact (bundle + standalone exe)
         uses: actions/download-artifact@v4
         with:
           name: ShirinHesab-windows
@@ -41,11 +43,58 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: ./artifact
 
+      - name: Download build manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: ShirinHesab-manifest
+          run-id: ${{ steps.resolve.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ./build-meta
+
+      # مانیفست بیلد قبلی از داخل بسته‌ی آپدیت آخرین ریلیز قبلی خوانده می‌شود؛
+      # اگر ریلیز قبلی بسته‌ی آپدیت نداشت، بسته‌ی این نسخه «کامل» ساخته می‌شود.
+      - name: Fetch previous release manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p prev
+          PREV_TAG=$(gh release list --limit 50 --json tagName,isDraft,createdAt \
+            --jq '[.[] | select(.isDraft == false and .tagName != "${{ inputs.tag }}")] | sort_by(.createdAt) | last | .tagName // empty')
+          echo "Previous release: ${PREV_TAG:-<none>}"
+          if [ -n "$PREV_TAG" ]; then
+            if gh release download "$PREV_TAG" --pattern 'ShirinHesab-Update-*.zip' --dir prev-rel; then
+              unzip -o -j prev-rel/ShirinHesab-Update-*.zip manifest.json -d prev/ || true
+            fi
+          fi
+          ls -la prev/ || true
+
+      - name: Build update package
+        run: |
+          VERSION="${{ inputs.tag }}"
+          VERSION="${VERSION#v}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          mkdir -p stage update-dist
+          cp ./artifact/*.exe stage/
+          cp CHANGELOG_FA.md stage/
+          PREV_ARG=""
+          if [ -f prev/manifest.json ]; then PREV_ARG="--prev-manifest prev/manifest.json"; fi
+          python3 tools/make_update.py --build-dir stage --version "$VERSION" $PREV_ARG --out-dir update-dist
+          ls -la update-dist/
+
+      # بادی ریلیز: خط همین نسخه از بخش «تغییرات نسخه‌های اخیر» در README
+      - name: Prepare release body from README
+        run: |
+          LINE=$(grep -F "نسخه‌ی ${{ env.VERSION }}" README.md | head -n 1 || true)
+          if [ -z "$LINE" ]; then LINE="شیرین حساب ${{ inputs.tag }}"; fi
+          printf '%s\n' "$LINE" > release-body.md
+          cat release-body.md
+
       - name: Create tag and release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag }}
           name: ShirinHesab ${{ inputs.tag }}
-          body: |
-            شیرین حساب ${{ inputs.tag }} — فایل نصب ویندوز (۱۰ و ۱۱)
-          files: ./artifact/**/*-setup.exe
+          body_path: release-body.md
+          files: |
+            ./artifact/**/*-setup.exe
+            ./update-dist/ShirinHesab-Update-v*.zip

@@ -11,6 +11,10 @@ export interface Invoice {
 }
 export interface CustomerSummary { total_invoiced: number; total_paid: number; debt: number; }
 export interface ConfectionerInfo { name: string; phone: string; }
+export interface UpdateInfo { version: string; notes: string; published_at: string; }
+export type UpdateReport =
+  | { status: "ok"; prev_version: string; new_version: string; changelog: string }
+  | { status: "failed" | "rolled_back"; detail: string };
 
 export const api = {
   listCustomers: (): Promise<Customer[]> => invoke("list_customers"),
@@ -42,4 +46,13 @@ export const api = {
     invoke("get_confectioner_info"),
   setConfectionerInfo: (name: string, phone: string): Promise<void> =>
     invoke("set_confectioner_info", { name, phone }),
+
+  // موتور به‌روزرسانی (بک‌اند: EAgent1) — قرارداد ثابت با رابط کاربری update-ui.ts
+  checkUpdate: (): Promise<UpdateInfo | null> => invoke("check_update"),
+  downloadAndApplyUpdate: (): Promise<void> => invoke("download_and_apply_update"),
+  cancelUpdateDownload: (): Promise<void> => invoke("cancel_update_download"),
+  getUpdateReport: (): Promise<UpdateReport | null> => invoke("get_update_report"),
+  getSetting: (key: string): Promise<string | null> => invoke("get_setting", { key }),
+  setSetting: (key: string, value: string): Promise<void> =>
+    invoke("set_setting", { key, value }),
 };

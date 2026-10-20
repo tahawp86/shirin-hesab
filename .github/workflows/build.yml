@@ -22,7 +22,28 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           args: --verbose
+
+      # فایل‌هایی که کنار exe نصب می‌شوند (exe مستقل + CHANGELOG_FA.md) را جدا
+      # می‌کنیم و manifest همین بیلد را می‌سازیم؛ مانیفست مبنای آپدیت تفاضلی است.
+      - name: Stage update files and build manifest
+        shell: bash
+        run: |
+          VERSION=$(python -c "import json; print(json.load(open('src-tauri/tauri.conf.json', encoding='utf-8'))['version'])")
+          echo "Version: $VERSION"
+          mkdir -p update-staging build-meta
+          cp src-tauri/target/release/*.exe update-staging/
+          cp CHANGELOG_FA.md update-staging/
+          python tools/make_update.py --build-dir update-staging --version "$VERSION" --manifest-only --out-dir build-meta
+
       - uses: actions/upload-artifact@v4
         with:
           name: ShirinHesab-windows
-          path: src-tauri/target/release/bundle/
+          path: |
+            src-tauri/target/release/bundle/
+            src-tauri/target/release/*.exe
+
+      # manifest جدا ذخیره می‌شود تا بیلد بعدی برای تفاضل پیدایش کند
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ShirinHesab-manifest
+          path: build-meta/manifest.json

@@ -1,5 +1,6 @@
 // شیرین حساب — صفحه‌ی اطلاعات قناد (نام صادرکننده‌ی فاکتور + شماره تلفن)
 import { api } from "../lib/api";
+import { renderUpdateSettings } from "../lib/update-ui";
 
 function esc(s: string): string {
   const map: Record<string, string> = {
@@ -71,7 +72,8 @@ export function renderSettings(root: HTMLElement): void {
           </div>
         </div>`
         }
-      </div>`;
+      </div>
+      <div id="update-settings-slot"></div>`;
 
     if (loading) return;
     const nameEl = root.querySelector<HTMLInputElement>("#s-name");
@@ -86,6 +88,9 @@ export function renderSettings(root: HTMLElement): void {
       phone = phoneEl.value;
     });
     saveBtn.addEventListener("click", () => void onSave());
+
+    const slot = root.querySelector<HTMLElement>("#update-settings-slot");
+    if (slot) renderUpdateSettings(slot);
   }
 
   async function onSave(): Promise<void> {

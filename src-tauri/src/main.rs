@@ -3,15 +3,25 @@
 // شیرین حساب — بک‌اند Tauri v2
 // پیاده‌سازی دستورها در db.rs است؛ فرانت (src/lib/api.ts) همین نام‌ها را صدا می‌زند.
 mod db;
+mod updater;
 
 use db::DbState;
 use std::sync::Mutex;
 use tauri::Manager;
 
 fn main() {
+    // مد موتور آپدیت: قبل از هر چیز (بدون پنجره/Tauri/دیتابیس)
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(|a| a == "--apply-update").unwrap_or(false) {
+        updater::run_apply_update(&args[2..]);
+    }
+    // پاک‌سازی فایل‌های .old باقی‌مانده از آپدیت قبلی
+    updater::cleanup_old_files();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .manage(updater::UpdateDlState::default())
         .setup(|app| {
             let db: DbState = Mutex::new(db::init_db(app.handle())?);
             app.manage(db);
@@ -34,8 +44,18 @@ fn main() {
             db::customer_summary,
             db::get_confectioner_info,
             db::set_confectioner_info,
+            db::get_setting,
+            db::set_setting,
             db::save_pdf_dialog,
             db::write_pdf_file,
+            db::get_auto_update_check,
+            db::set_auto_update_check,
+            db::get_update_notified_version,
+            db::set_update_notified_version,
+            updater::check_update,
+            updater::download_and_apply_update,
+            updater::cancel_update_download,
+            updater::get_update_report,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
