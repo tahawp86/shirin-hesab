@@ -28,6 +28,14 @@ import sys
 import zipfile
 from pathlib import Path
 
+# کنسول ویندوز (cp1252) نمی‌تواند متن فارسی چاپ کند و اسکریپت را در CI
+# می‌ترکاند — خروجی‌ها را صریح UTF-8 می‌کنیم.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 APP_NAME = "ShirinHesab"
 
 
