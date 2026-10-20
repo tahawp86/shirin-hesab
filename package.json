@@ -1,0 +1,21 @@
+{
+  "dependencies": {
+    "jspdf": "^2.5.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/cli": "^2",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.0"
+  },
+  "name": "shirin-hesab",
+  "private": true,
+  "scripts": {
+    "build": "npm run frontend && tauri build",
+    "dev": "npm run frontend && tauri dev",
+    "frontend": "node build-frontend.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "type": "module",
+  "version": "0.3.0"
+}

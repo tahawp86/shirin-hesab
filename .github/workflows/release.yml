@@ -1,0 +1,51 @@
+name: Release ShirinHesab
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag name (e.g. v0.1.0)'
+        required: true
+        default: 'v0.1.0'
+      run_id:
+        description: 'Build run ID to take the artifact from (empty = latest successful build)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve build run id
+        id: resolve
+        run: |
+          if [ -z "${{ inputs.run_id }}" ]; then
+            RID=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/workflows/build.yml/runs?status=success&per_page=1" \
+              | jq -r '.workflow_runs[0].id')
+          else
+            RID="${{ inputs.run_id }}"
+          fi
+          echo "run_id=$RID" >> "$GITHUB_OUTPUT"
+          echo "Using run $RID"
+
+      - name: Download setup artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ShirinHesab-windows
+          run-id: ${{ steps.resolve.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ./artifact
+
+      - name: Create tag and release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          name: ShirinHesab ${{ inputs.tag }}
+          body: |
+            شیرین حساب ${{ inputs.tag }} — فایل نصب ویندوز (۱۰ و ۱۱)
+          files: ./artifact/**/*-setup.exe

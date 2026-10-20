@@ -1,0 +1,50 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "security": {
+      "csp": null
+    },
+    "windows": [
+      {
+        "height": 780,
+        "minHeight": 600,
+        "minWidth": 900,
+        "title": "شیرین حساب",
+        "width": 1150
+      }
+    ]
+  },
+  "build": {
+    "beforeBuildCommand": "npm run frontend",
+    "beforeDevCommand": "npm run frontend",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist"
+  },
+  "bundle": {
+    "active": true,
+    "icon": [
+      "icons/icon.ico"
+    ],
+    "targets": [
+      "nsis"
+    ],
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/icon.ico",
+        "headerImage": "icons/header.bmp",
+        "sidebarImage": "icons/sidebar.bmp",
+        "template": "nsis/installer.nsi",
+        "startMenuFolder": "شیرین حساب",
+        "installMode": "currentUser",
+        "compression": "lzma"
+      },
+      "webviewInstallMode": {
+        "type": "embedBootstrapper",
+        "silent": true
+      }
+    }
+  },
+  "identifier": "ir.shirinhesab.app",
+  "productName": "ShirinHesab",
+  "version": "0.3.0"
+}
