@@ -18,6 +18,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: npm ci
 
+      # ساخت باینری هلپر آپدیت از کرِیت جدا (updater/) و گذاشتنش با پسوند تریپل
+      - name: Build updater helper
+        shell: bash
+        run: |
+          cargo build --release --manifest-path updater/Cargo.toml
+          cp updater/target/release/ShirinHesabUpdater.exe "src-tauri/binaries/ShirinHesabUpdater-x86_64-pc-windows-msvc.exe"
+          echo "Helper built and staged as sidecar."
+
       # قرارداد src-tauri/binaries/README.txt: باینری هلپر آپدیت باید پیش از
       # tauri build با پسوند تریپل در src-tauri/binaries باشد تا از طریق
       # externalBin داخل setup نصب شود (کنار exe اصلی).
