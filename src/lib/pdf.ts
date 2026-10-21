@@ -2,7 +2,7 @@
 // رندر فاکتور روی <canvas> (متن فارسی را canvas خودش درست شکل می‌دهد)،
 // قرار دادن تصویر در PDF با jsPDF و ذخیره از طریق کامندهای Tauri
 // (در صورت نبودن بک‌اند، fallback به doc.save()).
-import type { InvoiceItem } from "./api";
+import { api, type InvoiceItem } from "./api";
 import type { jsPDF as JsPdfDoc } from "jspdf";
 
 // jsPDF سنگین است و عمداً وارد باندل اولیه نمی‌شود؛ تایپش فقط type-only است
@@ -48,35 +48,65 @@ export interface InvoicePdfData {
   confectionerPhone?: string; // تلفن قناد
 }
 
-const LOGO_SRC = ["assets/pdf-logo.jpg", "assets/logo.png"];
 const FONT = '"Vazirmatn","B Nazanin",Tahoma,sans-serif';
-const INK = "#1c2f4a";
-const BLUE = "#1e5aa8";
-const BLUE_DARK = "#174a8b";
 const MUTED = "#5b7290";
-const LINE = "#c9dcf2";
-const HEAD_BG = BLUE;
 const HEAD_FG = "#ffffff";
-const ROW_ALT = "#eaf3fd";
-const TOTAL_BG = "#dbe9fb";
-const ACCENT = BLUE;
+
+// پالت رنگی PDF — از رنگ‌های لوگوی کاربر استخراج و در تنظیمات (کلید pdf_palette)
+// ذخیره می‌شود؛ اگر لوگو/پالتی نباشد، پالت پیش‌فرض آبی/سفید استفاده می‌شود.
+export interface PdfPalette { primary: string; dark: string; light: string; accent: string; }
+const DEFAULT_PALETTE: PdfPalette = { primary: "#1e5aa8", dark: "#1c2f4a", light: "#eaf3fd", accent: "#1e5aa8" };
+
+const isHexColor = (v: unknown): v is string =>
+  typeof v === "string" && /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(v);
+
+async function fetchPalette(): Promise<PdfPalette> {
+  try {
+    const raw = await api.getSetting("pdf_palette");
+    if (!raw) return DEFAULT_PALETTE;
+    const p = JSON.parse(raw) as Partial<PdfPalette>;
+    return {
+      primary: isHexColor(p.primary) ? p.primary : DEFAULT_PALETTE.primary,
+      dark: isHexColor(p.dark) ? p.dark : DEFAULT_PALETTE.dark,
+      light: isHexColor(p.light) ? p.light : DEFAULT_PALETTE.light,
+      accent: isHexColor(p.accent) ? p.accent : DEFAULT_PALETTE.accent,
+    };
+  } catch {
+    return DEFAULT_PALETTE;
+  }
+}
+
+// لوگوی اختصاصی کاربر (data URL) — لوگوی پیش‌فرض برنامه دیگر در PDF استفاده نمی‌شود.
+// wrapper ‏getUserLogo را ایجنت۵ به api.ts اضافه می‌کند؛ تا آن موقع از کلید
+// تنظیمی user_logo خوانده می‌شود. نبود لوگو یعنی سربرگ متنی با نام قناد.
+async function fetchUserLogo(): Promise<string | null> {
+  try {
+    const withLogo = api as typeof api & { getUserLogo?: () => Promise<string | null> };
+    if (typeof withLogo.getUserLogo === "function") {
+      const url = await withLogo.getUserLogo();
+      if (url) return url;
+    }
+  } catch {
+    /* wrapper یا بک‌اندش هنوز آماده نیست */
+  }
+  try {
+    return await api.getSetting("user_logo");
+  } catch {
+    return null;
+  }
+}
+
+function loadImageFromSrc(src: string): Promise<HTMLImageElement | null> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = src;
+  });
+}
 
 const faGrouped = (n: number): string => n.toLocaleString("fa-IR");
 const faPlain = (n: number): string => n.toLocaleString("fa-IR", { useGrouping: false });
-
-function loadLogo(): Promise<HTMLImageElement | null> {
-  return new Promise((resolve) => {
-    let i = 0;
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = () => {
-      i++;
-      if (i < LOGO_SRC.length) img.src = LOGO_SRC[i];
-      else resolve(null);
-    };
-    img.src = LOGO_SRC[0];
-  });
-}
 
 function ellipsize(ctx: CanvasRenderingContext2D, text: string, maxW: number): string {
   if (ctx.measureText(text).width <= maxW) return text;
@@ -86,10 +116,14 @@ function ellipsize(ctx: CanvasRenderingContext2D, text: string, maxW: number): s
 }
 
 /** رندر فاکتور روی canvas و برگرداندن آن */
-export async function renderInvoiceCanvas(data: InvoicePdfData): Promise<HTMLCanvasElement> {
+export async function renderInvoiceCanvas(
+  data: InvoicePdfData,
+  opts?: { logoUrl?: string | null; palette?: PdfPalette }
+): Promise<HTMLCanvasElement> {
   const W = 1240;
   const M = 80; // حاشیه کناری
-  const logo = await loadLogo();
+  const palette = opts?.palette ?? DEFAULT_PALETTE;
+  const logo = opts?.logoUrl ? await loadImageFromSrc(opts.logoUrl) : null;
   const rows = data.items;
 
   const meta: Array<[string, string]> = [
@@ -117,17 +151,24 @@ export async function renderInvoiceCanvas(data: InvoicePdfData): Promise<HTMLCan
 
   let y = 60;
 
-  // لوگوی بالای صفحه
+  // سربرگ: لوگوی اختصاصی کاربر؛ اگر لوگویی نباشد، تیتر متنی با نام قناد
   if (logo) {
     const s = Math.min(560 / logo.width, 170 / logo.height);
     const w = logo.width * s;
     const h = logo.height * s;
     ctx.drawImage(logo, (W - w) / 2, y + (170 - h) / 2, w, h);
+  } else if (data.confectionerName) {
+    ctx.fillStyle = palette.dark;
+    ctx.font = `700 58px ${FONT}`;
+    ctx.textAlign = "center";
+    ctx.fillText(data.confectionerName, W / 2, y + 68);
+    ctx.fillStyle = palette.accent;
+    ctx.fillRect(W / 2 - 90, y + 118, 180, 5);
   }
   y += 170 + 30;
 
   // عنوان
-  ctx.fillStyle = BLUE_DARK;
+  ctx.fillStyle = palette.dark;
   ctx.font = `700 48px ${FONT}`;
   ctx.textAlign = "center";
   ctx.fillText("فاکتور فروش", W / 2, y + 34);
@@ -142,7 +183,7 @@ export async function renderInvoiceCanvas(data: InvoicePdfData): Promise<HTMLCan
     ctx.fillText(labelText, W - M, y + 27);
     const lw = ctx.measureText(labelText + " ").width;
     ctx.font = `700 30px ${FONT}`;
-    ctx.fillStyle = INK;
+    ctx.fillStyle = palette.dark;
     ctx.fillText(value, W - M - lw - 14, y + 27);
     y += 54;
   }
@@ -172,7 +213,7 @@ export async function renderInvoiceCanvas(data: InvoicePdfData): Promise<HTMLCan
     r.align === "center" ? (r.x0 + r.x1) / 2 : r.align === "right" ? r.x1 - 18 : r.x0 + 18;
 
   // سربرگ جدول
-  ctx.fillStyle = HEAD_BG;
+  ctx.fillStyle = palette.primary;
   ctx.fillRect(x0, y, tableW, headH);
   ctx.font = `700 30px ${FONT}`;
   ctx.fillStyle = HEAD_FG;
@@ -181,7 +222,8 @@ export async function renderInvoiceCanvas(data: InvoicePdfData): Promise<HTMLCan
     ctx.fillText(r.title, cellX(r), y + headH / 2);
   }
   // خطوط عمودی سربرگ
-  ctx.strokeStyle = LINE;
+  ctx.strokeStyle = palette.accent;
+  ctx.globalAlpha = 0.45;
   ctx.lineWidth = 2;
   ctx.beginPath();
   for (const r of ranges) {
@@ -189,12 +231,13 @@ export async function renderInvoiceCanvas(data: InvoicePdfData): Promise<HTMLCan
     ctx.lineTo(r.x0 + 1, y + headH);
   }
   ctx.stroke();
+  ctx.globalAlpha = 1;
   y += headH;
 
   // ردیف‌های آیتم
   ctx.font = `400 29px ${FONT}`;
   rows.forEach((it, i) => {
-    ctx.fillStyle = i % 2 ? ROW_ALT : "#ffffff";
+    ctx.fillStyle = i % 2 ? palette.light : "#ffffff";
     ctx.fillRect(x0, y, tableW, rowH);
     const sum = Math.round(it.qty * it.unit_price);
     const cells = [
@@ -206,11 +249,12 @@ export async function renderInvoiceCanvas(data: InvoicePdfData): Promise<HTMLCan
     ];
     ranges.forEach((r, ci) => {
       ctx.textAlign = r.align;
-      ctx.fillStyle = INK;
+      ctx.fillStyle = palette.dark;
       ctx.fillText(cells[ci], cellX(r), y + rowH / 2);
     });
     // جداکننده ردیف + خطوط عمودی
-    ctx.strokeStyle = LINE;
+    ctx.strokeStyle = palette.accent;
+    ctx.globalAlpha = 0.45;
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     ctx.moveTo(x0, y + rowH);
@@ -220,20 +264,21 @@ export async function renderInvoiceCanvas(data: InvoicePdfData): Promise<HTMLCan
       ctx.lineTo(r.x0 + 1, y + rowH);
     }
     ctx.stroke();
+    ctx.globalAlpha = 1;
     y += rowH;
   });
 
   // ردیف جمع کل
   const grand = rows.reduce((s, it) => s + Math.round(it.qty * it.unit_price), 0);
-  ctx.fillStyle = TOTAL_BG;
+  ctx.fillStyle = palette.light;
   ctx.fillRect(x0, y, tableW, totalRowH);
   ctx.font = `700 32px ${FONT}`;
-  ctx.fillStyle = INK;
+  ctx.fillStyle = palette.dark;
   ctx.textAlign = "right";
   ctx.fillText("جمع کل:", ranges[1].x1 - 18, y + totalRowH / 2);
   ctx.textAlign = "center";
   ctx.fillText(faGrouped(grand) + " ریال", cellX(ranges[4]), y + totalRowH / 2);
-  ctx.strokeStyle = ACCENT;
+  ctx.strokeStyle = palette.accent;
   ctx.lineWidth = 3;
   ctx.beginPath();
   ctx.moveTo(x0, y);
@@ -254,7 +299,8 @@ export async function renderInvoiceCanvas(data: InvoicePdfData): Promise<HTMLCan
 
 /** ساخت PDF از فاکتور و ذخیره آن (Tauri dialog و در غیر این صورت دانلود مرورگر) */
 export async function exportInvoicePdf(data: InvoicePdfData): Promise<void> {
-  const canvas = await renderInvoiceCanvas(data);
+  const [logoUrl, palette] = await Promise.all([fetchUserLogo(), fetchPalette()]);
+  const canvas = await renderInvoiceCanvas(data, { logoUrl, palette });
   const jsPDF = await loadJsPdf();
   const doc = new jsPDF({ unit: "mm", format: "a4", orientation: "portrait" });
 

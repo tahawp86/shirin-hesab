@@ -104,15 +104,20 @@ async function initEditor(root: HTMLElement, customer: Customer, invoice?: Invoi
 
   root.innerHTML = `
   <style>
-    .inv-meta { display:flex; flex-wrap:wrap; gap:14px 36px; margin:6px 0 16px; align-items:center; }
+    .inv-meta { display:flex; flex-wrap:wrap; gap:14px 32px; margin:10px 0 18px; align-items:center; background:#fbf7f0; border:1px solid #f0e4d2; border-radius:12px; padding:14px 18px; }
     .inv-meta .lbl { color:var(--muted); font-size:13px; margin-inline-end:6px; }
-    .inv-meta input[readonly] { background:#f7f1e6; border-style:dashed; }
-    .inv-tools { display:flex; gap:10px; align-items:center; margin:14px 0 4px; flex-wrap:wrap; }
-    .grand { margin-inline-start:auto; font-size:17px; }
+    .inv-meta input[readonly] { background:#f7f1e6; border-style:dashed; min-width:190px; }
+    .inv-tools { display:flex; gap:10px; align-items:center; margin:16px 0 6px; flex-wrap:wrap; }
+    .grand { margin-inline-start:auto; font-size:17px; background:#f7f1e6; border:1px solid #f0e4d2; padding:8px 16px; border-radius:10px; }
     .grand b { color:var(--accent-dark); }
-    .inv-actions { display:flex; gap:10px; margin-top:16px; flex-wrap:wrap; }
+    .inv-actions { display:flex; gap:10px; margin-top:18px; flex-wrap:wrap; }
+    .inv-actions .btn { min-width:140px; padding:11px 20px; }
     .err { color:var(--danger); min-height:22px; margin:8px 0 0; }
     td.c, th.c { text-align:center; }
+    td { vertical-align:middle; }
+    #invRows tr:nth-child(even) { background:#fbf7f0; }
+    #invRows tr:hover { background:#f7f1e6; }
+    input:focus, select:focus { outline:2px solid #ecd9ae; border-color:var(--accent); }
     .p-sum { font-weight:700; white-space:nowrap; }
     select.p-sel, input.m-name { width:100%; }
     input.p-qty, input.m-qty { width:90px; text-align:center; }

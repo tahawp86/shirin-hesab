@@ -1,6 +1,7 @@
 // شیرین حساب — صفحه‌ی اطلاعات قناد (فرم قناد + به‌روزرسانی + پشتیبان‌گیری و انتقال)
 import { api, type BackupInfo } from "../lib/api";
 import { renderUpdateSettings } from "../lib/update-ui";
+import { extractPdfPalette } from "../lib/palette";
 import { navigate } from "../lib/router";
 
 function esc(s: string): string {
@@ -30,6 +31,12 @@ export function renderSettings(root: HTMLElement): void {
   let loading = true;
   let saving = false;
 
+  // وضعیت بخش لوگوی کاربر
+  let logoUrl: string | null = null;
+  let logoBusy = false;
+  let logoMsg = "";
+  let logoMsgOk = true;
+
   // وضعیت بخش پشتیبان‌گیری و انتقال
   let backupBusy = false;
   let backupMsg = "";
@@ -48,8 +55,41 @@ export function renderSettings(root: HTMLElement): void {
       msg = "خطا در بارگذاری اطلاعات: " + errMsg(e);
       msgOk = false;
     }
+    try {
+      logoUrl = await api.getUserLogo();
+    } catch {
+      logoUrl = null;
+    }
     loading = false;
     draw();
+  }
+
+  function logoSectionHtml(): string {
+    return `
+        ${
+          logoMsg
+            ? `<p style="color: ${
+              logoMsgOk ? "var(--ok)" : "var(--danger)"
+            }; margin: 0 0 10px;">${esc(logoMsg)}</p>`
+            : ""
+        }
+        ${
+          logoUrl
+            ? `
+        <div style="display: flex; align-items: center; gap: 14px; flex-wrap: wrap;">
+          <img src="${logoUrl}" alt="لوگوی شما" style="max-height: 92px; max-width: 240px; background: #fff; border: 1px solid #e2d5c0; border-radius: 10px; padding: 6px;" />
+          <div style="display: flex; gap: 10px;">
+            <button class="btn" id="l-pick" ${logoBusy ? "disabled" : ""}>${logoBusy ? "در حال پردازش…" : "تغییر لوگو"}</button>
+            <button class="btn ghost" id="l-clear" ${logoBusy ? "disabled" : ""}>حذف</button>
+          </div>
+        </div>`
+            : `
+        <p style="color: var(--muted); margin: 0 0 10px;">لوگویی انتخاب نشده است.</p>
+        <button class="btn" id="l-pick" ${logoBusy ? "disabled" : ""}>${logoBusy ? "در حال پردازش…" : "انتخاب لوگو"}</button>`
+        }
+        <p style="color: var(--muted); font-size: 13px; margin: 10px 0 0; line-height: 1.9;">
+          این لوگو در فاکتور PDF می‌آید و رنگ‌بندی PDF هم از رنگ‌های همین لوگو ساخته می‌شود.
+        </p>`;
   }
 
   function backupSectionHtml(): string {
@@ -115,6 +155,10 @@ export function renderSettings(root: HTMLElement): void {
         </div>`
         }
       </div>
+      <div class="card">
+        <h2>لوگوی شما (برای فاکتور PDF)</h2>
+        ${logoSectionHtml()}
+      </div>
       <div id="update-settings-slot"></div>
       <div class="card">
         <h2>پشتیبان‌گیری و انتقال</h2>
@@ -143,6 +187,10 @@ export function renderSettings(root: HTMLElement): void {
       root.querySelector<HTMLButtonElement>("#b-export")?.addEventListener("click", () => void onExport());
       root.querySelector<HTMLButtonElement>("#b-import")?.addEventListener("click", () => void onPickImport());
     }
+
+    // بخش لوگوی کاربر
+    root.querySelector<HTMLButtonElement>("#l-pick")?.addEventListener("click", () => void onPickLogo());
+    root.querySelector<HTMLButtonElement>("#l-clear")?.addEventListener("click", () => void onClearLogo());
 
     if (loading) return;
     const nameEl = root.querySelector<HTMLInputElement>("#s-name");
@@ -180,6 +228,57 @@ export function renderSettings(root: HTMLElement): void {
       msgOk = false;
     }
     saving = false;
+    draw();
+  }
+
+  async function onPickLogo(): Promise<void> {
+    logoBusy = true;
+    logoMsg = "";
+    draw();
+    try {
+      const url = await api.pickAndSetUserLogo();
+      if (url) {
+        logoUrl = url;
+        let paletteOk = false;
+        try {
+          const palette = await extractPdfPalette(url);
+          await api.setSetting("pdf_palette", JSON.stringify(palette));
+          paletteOk = true;
+        } catch {
+          // استخراج پالت نباید جریان انتخاب لوگو را خراب کند
+        }
+        logoMsg = paletteOk
+          ? "لوگو ذخیره شد و رنگ‌بندی PDF از آن ساخته شد."
+          : "لوگو ذخیره شد.";
+        logoMsgOk = true;
+      }
+    } catch (e) {
+      logoMsg = "خطا در انتخاب لوگو: " + errMsg(e);
+      logoMsgOk = false;
+    }
+    logoBusy = false;
+    draw();
+  }
+
+  async function onClearLogo(): Promise<void> {
+    logoBusy = true;
+    logoMsg = "";
+    draw();
+    try {
+      await api.clearUserLogo();
+      logoUrl = null;
+      try {
+        await api.setSetting("pdf_palette", "");
+      } catch {
+        // پاک‌کردن پالت نباید حذف لوگو را خراب کند
+      }
+      logoMsg = "لوگو حذف شد.";
+      logoMsgOk = true;
+    } catch (e) {
+      logoMsg = "خطا در حذف لوگو: " + errMsg(e);
+      logoMsgOk = false;
+    }
+    logoBusy = false;
     draw();
   }
 

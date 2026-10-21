@@ -1,4 +1,4 @@
-/* شیرین حساب — استایل پایه (EAgent2/EAgent3/EAgent4 تکمیل می‌کنند) */
+/* شیرین حساب — استایل سراسری (پوسته، هدر/ناوبری، دکمه‌ها، فرم‌ها، جدول‌ها) */
 :root {
   --bg: #faf6ef;
   --card: #ffffff;
@@ -7,46 +7,101 @@
   --text: #3a2e22;
   --muted: #8a7a68;
   --danger: #c0392b;
+  --danger-dark: #a93226;
   --ok: #2e7d4f;
+  --border: #f0e4d2;
+  --border-input: #e2d5c0;
+  --ring: rgba(201, 138, 46, 0.35);
 }
 * { box-sizing: border-box; }
+html { scrollbar-width: thin; scrollbar-color: #d9c8a9 transparent; }
 body {
   margin: 0;
   font-family: "Vazirmatn", "B Nazanin", Tahoma, sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
   background: var(--bg);
   color: var(--text);
 }
+::selection { background: #f3e3c3; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #d9c8a9; border-radius: 999px; border: 2px solid var(--bg); }
+::-webkit-scrollbar-thumb:hover { background: #c9b184; }
+
+/* سربرگ و ناوبری */
 .app-header {
-  display: flex; align-items: center; gap: 12px;
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
   padding: 10px 18px; background: var(--card);
-  border-bottom: 2px solid #f0e4d2;
+  border-bottom: 2px solid var(--border);
 }
-.app-logo { height: 52px; }
-.app-header h1 { font-size: 22px; margin: 0; }
-.app-header nav { margin-inline-start: auto; display: flex; gap: 8px; }
+.app-logo { height: 52px; width: auto; }
+.app-header h1 { font-size: 22px; margin: 0; line-height: 1.3; }
+.app-header nav { margin-inline-start: auto; display: flex; gap: 8px; flex-wrap: wrap; }
 .nav-btn {
   border: 1px solid var(--accent); background: transparent; color: var(--accent-dark);
   padding: 8px 18px; border-radius: 10px; cursor: pointer; font-size: 15px; font-family: inherit;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
-.nav-btn.active, .nav-btn:hover { background: var(--accent); color: #fff; }
+.nav-btn:hover { background: #f7ead2; color: var(--accent-dark); }
+.nav-btn.active, .nav-btn.active:hover { background: var(--accent); color: #fff; }
+.nav-btn:active { background: var(--accent-dark); color: #fff; }
+.nav-btn:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+
 #app { padding: 18px; max-width: 1100px; margin: 0 auto; }
+
+/* کارت‌ها */
 .card { background: var(--card); border-radius: 14px; padding: 16px; box-shadow: 0 1px 3px #0001; margin-bottom: 14px; }
+.card h2 { font-size: 18px; margin: 0 0 12px; line-height: 1.5; }
+
+/* دکمه‌ها */
 .btn {
   border: none; border-radius: 10px; padding: 9px 18px; font-size: 14px; cursor: pointer; font-family: inherit;
-  background: var(--accent); color: #fff;
+  background: var(--accent); color: #fff; line-height: 1.5;
+  transition: background-color 0.15s ease;
 }
 .btn:hover { background: var(--accent-dark); }
+.btn:active { background: var(--accent-dark); }
+.btn:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 .btn.danger { background: var(--danger); }
+.btn.danger:hover, .btn.danger:active { background: var(--danger-dark); }
 .btn.ghost { background: #eee5d5; color: var(--text); }
-table { width: 100%; border-collapse: collapse; }
-th, td { padding: 10px; border-bottom: 1px solid #f0e4d2; text-align: right; }
-th { color: var(--muted); font-weight: 600; font-size: 13px; }
-input, select {
-  font-family: inherit; font-size: 14px; padding: 9px 12px;
-  border: 1px solid #e2d5c0; border-radius: 10px; background: #fff; color: var(--text);
+.btn.ghost:hover, .btn.ghost:active { background: #e2d5c0; }
+button:disabled { opacity: 0.55; cursor: not-allowed; }
+
+/* فرم‌ها */
+input, select, textarea {
+  font-family: inherit; font-size: 14px; padding: 9px 12px; line-height: 1.5;
+  border: 1px solid var(--border-input); border-radius: 10px; background: #fff; color: var(--text);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
+input:focus, select:focus, textarea:focus {
+  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring);
+}
+input:disabled, select:disabled, textarea:disabled {
+  background: #f5efe4; color: var(--muted); cursor: not-allowed;
+}
+
+/* جدول‌ها */
+table { width: 100%; border-collapse: collapse; }
+th, td { padding: 10px; border-bottom: 1px solid var(--border); text-align: right; }
+th { color: var(--muted); font-weight: 600; font-size: 13px; }
+tbody tr { transition: background-color 0.12s ease; }
+tbody tr:hover { background: #fdf9f2; }
 .paid { color: var(--ok); font-weight: 700; }
 .unpaid { color: var(--danger); font-weight: 700; }
+
+/* پنجره‌های باریک (حداقل عرض پنجره: ۹۰۰px) */
+@media (max-width: 980px) {
+  #app { padding: 12px; }
+  .app-header { padding: 8px 12px; gap: 8px; }
+  .app-logo { height: 44px; }
+  .app-header h1 { font-size: 19px; }
+  .nav-btn { padding: 7px 12px; font-size: 14px; }
+  .card { padding: 13px; }
+  th, td { padding: 8px; }
+}
+
 /* سیستم‌های ضعیف: اگر کاربر کاهش حرکت را ترجیح می‌دهد، ترنزیشن/انیمیشن‌ها خاموش */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }

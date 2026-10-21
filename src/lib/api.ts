@@ -61,6 +61,13 @@ export const api = {
   setSetting: (key: string, value: string): Promise<void> =>
     invoke("set_setting", { key, value }),
 
+  // لوگوی کاربر برای PDF (بک‌اند: EAgent1) — pickAndSetUserLogo و getUserLogo
+  // یک data URL برای پیش‌نمایش برمی‌گردانند (یا null)
+  pickAndSetUserLogo: (): Promise<string | null> =>
+    invoke("pick_and_set_user_logo"),
+  getUserLogo: (): Promise<string | null> => invoke("get_user_logo"),
+  clearUserLogo: (): Promise<void> => invoke("clear_user_logo"),
+
   // پشتیبان‌گیری و انتقال (بک‌اند: EAgent1)
   exportBackup: (): Promise<string | null> => invoke("export_backup"),
   pickAndValidateBackup: (): Promise<BackupInfo | null> =>

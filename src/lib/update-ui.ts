@@ -85,9 +85,12 @@ function ensureStyles(): void {
     .upd-nav-btn {
       border: 1px solid var(--accent); background: var(--accent); color: #fff;
       padding: 8px 18px; border-radius: 10px; cursor: pointer; font-size: 15px; font-family: inherit;
-      white-space: nowrap;
+      white-space: nowrap; line-height: 1.5;
+      transition: background-color 0.15s ease;
     }
     .upd-nav-btn:hover { background: var(--accent-dark); }
+    .upd-nav-btn:active { background: var(--accent-dark); }
+    .upd-nav-btn:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
     .upd-overlay {
       position: fixed; inset: 0; z-index: 300; background: rgba(0, 0, 0, 0.4);
       display: flex; align-items: center; justify-content: center;

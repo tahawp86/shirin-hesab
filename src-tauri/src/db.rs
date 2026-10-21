@@ -7,6 +7,7 @@
 use chrono::Local;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use tauri::{AppHandle, Manager, State};
 
@@ -846,6 +847,122 @@ fn read_table_rows(conn: &Connection, table: &str) -> Result<Vec<serde_json::Val
     Ok(out)
 }
 
+// ---------- لوگوی کاربر (برای PDF) ----------
+// لوگو در پوشه‌ی داده‌ی برنامه با نام ثابت user-logo.<ext> نگه داشته می‌شود؛
+// PDF و پیش‌نمایش از get_user_logo می‌خوانند.
+
+const LOGO_MAX_BYTES: usize = 2 * 1024 * 1024;
+const LOGO_EXTS: [&str; 4] = ["png", "jpg", "jpeg", "webp"];
+
+fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map_err(|e| format!("مسیر داده‌ی برنامه پیدا نشد: {e}"))
+}
+
+fn find_user_logo(dir: &Path) -> Option<(PathBuf, String)> {
+    for ext in LOGO_EXTS {
+        let p = dir.join(format!("user-logo.{ext}"));
+        if p.exists() {
+            return Some((p, ext.to_string()));
+        }
+    }
+    None
+}
+
+/// تشخیص فرمت واقعی عکس از روی بایت‌های اول (نه پسوند فایل)
+fn detect_image_ext(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        Some("png")
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("jpg")
+    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("webp")
+    } else {
+        None
+    }
+}
+
+/// ذخیره‌ی بایت‌های لوگو با اعتبارسنجی (فرمت واقعی + سقف ۲ مگابایت)؛ پسوند واقعی برمی‌گردد
+fn save_user_logo_bytes(dir: &Path, bytes: &[u8]) -> Result<String, String> {
+    if bytes.len() > LOGO_MAX_BYTES {
+        return Err("حجم لوگو باید حداکثر ۲ مگابایت باشد.".to_string());
+    }
+    let ext = detect_image_ext(bytes).ok_or_else(|| {
+        "فرمت فایل پشتیبانی نمی‌شود؛ یک عکس PNG یا JPG یا WebP انتخاب کنید.".to_string()
+    })?;
+    std::fs::create_dir_all(dir)
+        .map_err(|e| format!("ساخت پوشه‌ی داده‌ی برنامه ناموفق بود: {e}"))?;
+    // نسخه‌ی قبلی (با هر پسوندی) پاک شود تا فقط یک لوگو بماند
+    for e in LOGO_EXTS {
+        let p = dir.join(format!("user-logo.{e}"));
+        if p.exists() {
+            let _ = std::fs::remove_file(&p);
+        }
+    }
+    std::fs::write(dir.join(format!("user-logo.{ext}")), bytes)
+        .map_err(|e| format!("ذخیره‌ی فایل لوگو ناموفق بود: {e}"))?;
+    Ok(ext.to_string())
+}
+
+fn user_logo_data_url(dir: &Path) -> Result<Option<String>, String> {
+    use base64::Engine;
+    match find_user_logo(dir) {
+        None => Ok(None),
+        Some((path, ext)) => {
+            let bytes = std::fs::read(&path)
+                .map_err(|e| format!("خواندن فایل لوگو ناموفق بود: {e}"))?;
+            let mime = match ext.as_str() {
+                "png" => "image/png",
+                "webp" => "image/webp",
+                _ => "image/jpeg",
+            };
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            Ok(Some(format!("data:{mime};base64,{b64}")))
+        }
+    }
+}
+
+/// انتخاب فایل لوگو از دیالوگ، اعتبارسنجی و ذخیره — data URL برای پیش‌نمایش یا None (انصراف)
+#[tauri::command]
+pub fn pick_and_set_user_logo(app: AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::{DialogExt, FilePath};
+    let picked = app
+        .dialog()
+        .file()
+        .add_filter("عکس", &["png", "jpg", "jpeg", "webp"])
+        .blocking_pick_file();
+    let path = match picked {
+        Some(FilePath::Path(p)) => p,
+        _ => return Ok(None),
+    };
+    let bytes = std::fs::read(&path)
+        .map_err(|e| format!("خواندن فایل لوگو ناموفق بود: {e}"))?;
+    let dir = data_dir(&app)?;
+    save_user_logo_bytes(&dir, &bytes)?;
+    user_logo_data_url(&dir)
+}
+
+/// data URL لوگوی کاربر برای PDF و پیش‌نمایش — None اگر لوگویی نیست
+#[tauri::command]
+pub fn get_user_logo(app: AppHandle) -> Result<Option<String>, String> {
+    user_logo_data_url(&data_dir(&app)?)
+}
+
+/// حذف فایل لوگوی کاربر
+#[tauri::command]
+pub fn clear_user_logo(app: AppHandle) -> Result<(), String> {
+    let dir = data_dir(&app)?;
+    for e in LOGO_EXTS {
+        let p = dir.join(format!("user-logo.{e}"));
+        if p.exists() {
+            std::fs::remove_file(&p)
+                .map_err(|e2| format!("حذف فایل لوگو ناموفق بود: {e2}"))?;
+        }
+    }
+    Ok(())
+}
+
 /// ساخت و ذخیره‌ی فایل پشتیبان JSON از همه‌ی جدول‌ها — مسیر انتخابی یا None (انصراف)
 #[tauri::command]
 pub fn export_backup(
@@ -873,6 +990,21 @@ pub fn export_backup(
         }
     }
     data.insert("settings".to_string(), serde_json::Value::Object(settings));
+    // لوگوی کاربر هم کنار داده‌ها می‌رود: {ext, base64} یا null
+    // (کلید pdf_palette هم داخل همان settings بالاست و خودکار جابه‌جا می‌شود)
+    let user_logo = data_dir(&app).ok().and_then(|dir| {
+        let (path, ext) = find_user_logo(&dir)?;
+        let bytes = std::fs::read(&path).ok()?;
+        use base64::Engine;
+        Some(serde_json::json!({
+            "ext": ext,
+            "base64": base64::engine::general_purpose::STANDARD.encode(&bytes),
+        }))
+    });
+    data.insert(
+        "user_logo".to_string(),
+        user_logo.unwrap_or(serde_json::Value::Null),
+    );
     // واحد پول ذخیره‌شده‌ی فعلی: گارد مهاجرت ست شده باشد یعنی داده‌ها ریالی‌اند
     let currency = if read_setting(&conn, "currency_rial_migrated")? == "1" {
         "rial"
@@ -910,6 +1042,8 @@ struct LoadedBackup {
     exported_at: String,
     currency: String,
     data: serde_json::Map<String, serde_json::Value>,
+    /// بایت‌های لوگوی کاربر از داخل بک‌آپ — None در بک‌آپ‌های قدیمی یا بدون لوگو
+    user_logo: Option<Vec<u8>>,
 }
 
 fn load_backup_file(path: &str) -> Result<LoadedBackup, String> {
@@ -964,10 +1098,40 @@ fn load_backup_file(path: &str) -> Result<LoadedBackup, String> {
             )
         }
     }
+    // لوگوی کاربر اختیاری است — بک‌آپ‌های قدیمی این بخش را ندارند و نباید خطا بدهند؛
+    // اگر بود، base64 و فرمت و سقف حجمش همین‌جا اعتبارسنجی می‌شود
+    let user_logo = match data.get("user_logo") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(v) => {
+            let obj = v.as_object().ok_or_else(|| {
+                "فایل پشتیبان ناقص است: بخش لوگوی کاربر نادرست است.".to_string()
+            })?;
+            let b64 = obj
+                .get("base64")
+                .and_then(|x| x.as_str())
+                .ok_or_else(|| {
+                    "فایل پشتیبان ناقص است: داده‌ی لوگوی کاربر وجود ندارد.".to_string()
+                })?;
+            use base64::Engine;
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(b64)
+                .map_err(|_| "داده‌ی لوگوی داخل فایل پشتیبان خراب است.".to_string())?;
+            if bytes.len() > LOGO_MAX_BYTES {
+                return Err(
+                    "لوگوی داخل فایل پشتیبان بزرگ‌تر از حد مجاز (۲ مگابایت) است.".to_string(),
+                );
+            }
+            if detect_image_ext(&bytes).is_none() {
+                return Err("لوگوی داخل فایل پشتیبان عکس معتبر نیست.".to_string());
+            }
+            Some(bytes)
+        }
+    };
     Ok(LoadedBackup {
         exported_at,
         currency: currency.to_string(),
         data: data.clone(),
+        user_logo,
     })
 }
 
@@ -1121,7 +1285,11 @@ fn apply_import_tx(
 
 /// بازیابی کامل از فایل پشتیبان — در یک تراکنش؛ پشتیبان تومانی هنگام درج ×۱۰ می‌شود
 #[tauri::command]
-pub fn apply_backup_import(state: State<'_, DbState>, path: String) -> Result<(), String> {
+pub fn apply_backup_import(
+    app: AppHandle,
+    state: State<'_, DbState>,
+    path: String,
+) -> Result<(), String> {
     let backup = load_backup_file(&path)?;
     let mult: f64 = if backup.currency == "toman" { 10.0 } else { 1.0 };
     let mut conn = lock(&state)?;
@@ -1130,6 +1298,12 @@ pub fn apply_backup_import(state: State<'_, DbState>, path: String) -> Result<()
         .map_err(|e| format!("شروع تراکنش بازیابی ناموفق بود: {e}"))?;
     // اگر apply_import_tx خطا بدهد، tx بدون commit رها و همه‌چیز rollback می‌شود
     apply_import_tx(&tx, &backup, mult)?;
+    // لوگوی کاربر هم برمی‌گردد — قبل از commit تا خطایش تراکنش را هم rollback کند؛
+    // بک‌آپ بدون لوگو (قدیمی) لوگوی فعلی را دست نمی‌زند
+    if let Some(bytes) = &backup.user_logo {
+        let dir = data_dir(&app)?;
+        save_user_logo_bytes(&dir, bytes)?;
+    }
     tx.commit()
         .map_err(|e| format!("ثبت نهایی بازیابی ناموفق بود: {e}"))?;
     Ok(())
