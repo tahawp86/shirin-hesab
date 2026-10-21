@@ -10,18 +10,13 @@ use std::sync::Mutex;
 use tauri::Manager;
 
 fn main() {
-    // مد موتور آپدیت: قبل از هر چیز (بدون پنجره/Tauri/دیتابیس)
-    let args: Vec<String> = std::env::args().collect();
-    if args.get(1).map(|a| a == "--apply-update").unwrap_or(false) {
-        updater::run_apply_update(&args[2..]);
-    }
     // پاک‌سازی فایل‌های .old باقی‌مانده از آپدیت قبلی
     updater::cleanup_old_files();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
-        .manage(updater::UpdateDlState::default())
+        .manage(updater::UpdateV2State::default())
         .setup(|app| {
             let db: DbState = Mutex::new(db::init_db(app.handle())?);
             app.manage(db);
@@ -51,15 +46,16 @@ fn main() {
             db::pick_and_validate_backup,
             db::apply_backup_import,
             db::write_pdf_file,
-            db::get_auto_update_check,
-            db::set_auto_update_check,
+            db::get_update_mode,
+            db::set_update_mode,
             db::get_update_notified_version,
             db::set_update_notified_version,
-            updater::check_update,
+            updater::check_update2,
+            updater::download_update2,
+            updater::apply_update2,
+            updater::cancel_update_download2,
             updater::open_update_file_dialog,
             updater::apply_local_update,
-            updater::download_and_apply_update,
-            updater::cancel_update_download,
             updater::get_update_report,
         ])
         .run(tauri::generate_context!())

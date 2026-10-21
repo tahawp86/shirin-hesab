@@ -17,6 +17,24 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: npm ci
+
+      # قرارداد src-tauri/binaries/README.txt: باینری هلپر آپدیت باید پیش از
+      # tauri build با پسوند تریپل در src-tauri/binaries باشد تا از طریق
+      # externalBin داخل setup نصب شود (کنار exe اصلی).
+      - name: Ensure updater helper sidecar
+        shell: bash
+        run: |
+          TRIPLE="x86_64-pc-windows-msvc"
+          if [ -f "src-tauri/binaries/ShirinHesabUpdater-$TRIPLE.exe" ]; then
+            echo "Helper sidecar present: ShirinHesabUpdater-$TRIPLE.exe"
+          elif [ -f "src-tauri/binaries/ShirinHesabUpdater.exe" ]; then
+            cp "src-tauri/binaries/ShirinHesabUpdater.exe" "src-tauri/binaries/ShirinHesabUpdater-$TRIPLE.exe"
+            echo "Helper sidecar normalized to triple name."
+          else
+            echo "::error::ShirinHesabUpdater sidecar در src-tauri/binaries نیست؛ کرِیت هلپر باید پیش از این مرحله ساخته و باینری آنجا گذاشته شود."
+            exit 1
+          fi
+
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -33,6 +51,11 @@ jobs:
           mkdir -p update-staging build-meta
           cp src-tauri/target/release/*.exe update-staging/
           cp CHANGELOG_FA.md update-staging/
+          # هلپر آپدیت (sidecar) باید کنار exe اصلی استیج شده باشد تا داخل بسته‌های آپدیت هم بیاید
+          if [ ! -f update-staging/ShirinHesabUpdater.exe ]; then
+            echo "::error::ShirinHesabUpdater.exe در خروجی بیلد (target/release) نیست."
+            exit 1
+          fi
           python tools/make_update.py --build-dir update-staging --version "$VERSION" --manifest-only --out-dir build-meta
 
       - uses: actions/upload-artifact@v4

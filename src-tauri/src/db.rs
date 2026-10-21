@@ -164,6 +164,19 @@ pub fn init_db(app: &AppHandle) -> Result<Connection, Box<dyn std::error::Error>
         )?;
         tx.commit()?;
     }
+    // نگاشت کلید قدیمی auto_update_check به update_mode موتور آپدیت v2
+    // (فقط وقتی update_mode هنوز ست نشده: روشن = auto، خاموش = off)
+    if read_setting(&conn, "update_mode")?.is_empty() {
+        let legacy = read_setting(&conn, "auto_update_check")?;
+        if !legacy.is_empty() {
+            let mode = if legacy == "false" || legacy == "0" {
+                "off"
+            } else {
+                "auto"
+            };
+            write_setting(&conn, "update_mode", mode)?;
+        }
+    }
     Ok(conn)
 }
 
@@ -697,20 +710,33 @@ pub fn set_confectioner_info(
     Ok(())
 }
 
-// ---------- تنظیمات آپدیت خودکار ----------
+// ---------- تنظیمات موتور آپدیت v2 ----------
 
-/// چک خودکار آپدیت در استارت — پیش‌فرض روشن
+/// حالت آپدیت: ‏auto (دانلود خودکار + اطلاع برای نصب) | notify (فقط اطلاع) | off
+/// اگر update_mode ست نشده باشد، از کلید قدیمی auto_update_check نگاشت می‌شود
+/// (روشن = auto، خاموش = off؛ پیش‌فرض قدیم روشن بود)
 #[tauri::command]
-pub fn get_auto_update_check(state: State<'_, DbState>) -> Result<bool, String> {
+pub fn get_update_mode(state: State<'_, DbState>) -> Result<String, String> {
     let conn = lock(&state)?;
-    let v = read_setting(&conn, "auto_update_check")?;
-    Ok(v != "false" && v != "0")
+    let m = read_setting(&conn, "update_mode")?;
+    if m == "auto" || m == "notify" || m == "off" {
+        return Ok(m);
+    }
+    let legacy = read_setting(&conn, "auto_update_check")?;
+    Ok(if legacy == "false" || legacy == "0" {
+        "off".to_string()
+    } else {
+        "auto".to_string()
+    })
 }
 
 #[tauri::command]
-pub fn set_auto_update_check(state: State<'_, DbState>, enabled: bool) -> Result<(), String> {
+pub fn set_update_mode(state: State<'_, DbState>, mode: String) -> Result<(), String> {
+    if mode != "auto" && mode != "notify" && mode != "off" {
+        return Err("حالت آپدیت نامعتبر است.".to_string());
+    }
     let conn = lock(&state)?;
-    write_setting(&conn, "auto_update_check", if enabled { "true" } else { "false" })
+    write_setting(&conn, "update_mode", &mode)
 }
 
 /// آخرین نسخه‌ای که به کاربر اطلاع داده شده (ضداسپم)

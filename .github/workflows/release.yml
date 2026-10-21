@@ -58,17 +58,20 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p prev
-          PREV_TAG=$(gh release list --limit 50 --json tagName,isDraft,createdAt \
-            --jq '[.[] | select(.isDraft == false and .tagName != "${{ inputs.tag }}")] | sort_by(.createdAt) | last | .tagName // empty')
+          PREV_TAG=$(gh release list --limit 50 --json tagName,isDraft,isPrerelease,createdAt \
+            --jq '[.[] | select(.isDraft == false and .isPrerelease == false and .tagName != "${{ inputs.tag }}" and .tagName != "update-feed")] | sort_by(.createdAt) | last | .tagName // empty')
           echo "Previous release: ${PREV_TAG:-<none>}"
           if [ -n "$PREV_TAG" ]; then
             if gh release download "$PREV_TAG" --pattern 'ShirinHesab-Update-*.zip' --dir prev-rel; then
-              unzip -o -j prev-rel/ShirinHesab-Update-*.zip manifest.json -d prev/ || true
+              FULL_ZIP=$(ls prev-rel/ShirinHesab-Update-v*.zip | grep -v -- '-from-' | head -n 1 || true)
+              if [ -n "$FULL_ZIP" ]; then unzip -o -j "$FULL_ZIP" manifest.json -d prev/ || true; fi
             fi
           fi
           ls -la prev/ || true
 
-      - name: Build update package
+      # مدل جدید انتشار: بسته‌ی کامل (سازگار با موتور قدیمی) + بسته‌ی دلتا از
+      # نسخه‌ی قبلی + update-feed.json برای موتور جدید
+      - name: Build update packages and feed
         run: |
           VERSION="${{ inputs.tag }}"
           VERSION="${VERSION#v}"
@@ -78,7 +81,9 @@ jobs:
           cp CHANGELOG_FA.md stage/
           PREV_ARG=""
           if [ -f prev/manifest.json ]; then PREV_ARG="--prev-manifest prev/manifest.json"; fi
-          python3 tools/make_update.py --build-dir stage --version "$VERSION" $PREV_ARG --out-dir update-dist
+          python3 tools/make_feed.py --build-dir stage --version "$VERSION" \
+            --changelog CHANGELOG_FA.md --repo "${{ github.repository }}" \
+            $PREV_ARG --out-dir update-dist
           ls -la update-dist/
 
       # بادی ریلیز: خط همین نسخه از بخش «تغییرات نسخه‌های اخیر» در README
@@ -98,3 +103,19 @@ jobs:
           files: |
             ./artifact/**/*-setup.exe
             ./update-dist/ShirinHesab-Update-v*.zip
+
+      # فید ثابت موتور آپدیت: update-feed.json در ریلیز ثابت «update-feed» منتشر
+      # می‌شود و هر بار همان یک فایل جایگزین می‌شود تا آدرس فید همیشه ثابت بماند:
+      # https://github.com/tahawp86/shirin-hesab/releases/download/update-feed/update-feed.json
+      # (prerelease است تا هیچ‌وقت «آخرین ریلیز» مخزن نشود.)
+      - name: Publish update feed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ! gh release view update-feed > /dev/null 2>&1; then
+            gh release create update-feed --prerelease \
+              --title "Update Feed" \
+              --notes "فایل فید موتور آپدیت (update-feed.json) — برای دانلود دستی نیست؛ موتور آپدیت برنامه آن را می‌خواند."
+          fi
+          gh release upload update-feed update-dist/update-feed.json --clobber
+          echo "Feed published: https://github.com/${{ github.repository }}/releases/download/update-feed/update-feed.json"

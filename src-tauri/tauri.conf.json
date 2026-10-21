@@ -46,9 +46,12 @@
     "resources": {
       "../version.txt": "version.txt",
       "../CHANGELOG_FA.md": "CHANGELOG_FA.md"
-    }
+    },
+    "externalBin": [
+      "binaries/ShirinHesabUpdater"
+    ]
   },
   "identifier": "ir.shirinhesab.app",
   "productName": "ShirinHesab",
-  "version": "0.5.0"
+  "version": "0.6.0"
 }
