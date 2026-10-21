@@ -114,6 +114,9 @@ ${STYLE}
         )}</p>`;
     });
 
+  const INVOICE_PAGE_SIZE = 100; // سقف ردیف در هر نوبت رندر (بهینه‌سازی برای سیستم‌های ضعیف)
+  let shownCount = 0; // چند ردیف از فاکتورها تا این لحظه رندر شده است
+
   function renderTable(invoices: Invoice[]): void {
     const box = $("ci-invoices");
     if (!box) return;
@@ -121,25 +124,7 @@ ${STYLE}
       box.innerHTML = `<p class="ci-empty">هنوز فاکتوری برای این مشتری ثبت نشده است.</p>`;
       return;
     }
-    const rows = invoices
-      .map(
-        (inv) => `
-      <tr data-id="${inv.id}">
-        <td>${inv.invoice_number.toLocaleString("fa-IR")}</td>
-        <td>${toJalali(inv.date)}</td>
-        <td>${fmtMoney(inv.total)}</td>
-        <td><span class="${inv.status === "paid" ? "paid" : "unpaid"}">${
-          inv.status === "paid" ? "پرداخت شده" : "پرداخت نشده"
-        }</span></td>
-        <td>
-          <div class="ci-actions">
-            <button class="btn ghost" data-act="edit">ویرایش</button>
-            <button class="btn danger" data-act="del">حذف</button>
-          </div>
-        </td>
-      </tr>`
-      )
-      .join("");
+    // اسکلت جدول یک‌جا ساخته می‌شود؛ ردیف‌ها با DocumentFragment و دسته‌ای اضافه می‌شوند.
     box.innerHTML = `
       <table>
         <thead>
@@ -151,13 +136,37 @@ ${STYLE}
             <th></th>
           </tr>
         </thead>
-        <tbody>${rows}</tbody>
-      </table>`;
+        <tbody id="ci-tbody"></tbody>
+      </table>
+      <div id="ci-more" style="text-align:center"></div>`;
+    shownCount = 0;
+    appendRows(invoices);
+  }
 
-    box.querySelectorAll("tr[data-id]").forEach((tr) => {
-      const id = Number((tr as HTMLElement).dataset.id);
-      const inv = invoices.find((i) => i.id === id);
-      if (!inv) return;
+  // حداکثر INVOICE_PAGE_SIZE ردیف را در یک DocumentFragment می‌سازد و یک‌جا به
+  // tbody اضافه می‌کند؛ اگر فاکتور بیشتری مانده باشد دکمه‌ی «نمایش بیشتر» می‌آید.
+  function appendRows(invoices: Invoice[]): void {
+    const tbody = root.querySelector<HTMLTableSectionElement>("#ci-tbody");
+    const moreBox = root.querySelector<HTMLElement>("#ci-more");
+    if (!tbody) return;
+    const chunk = invoices.slice(shownCount, shownCount + INVOICE_PAGE_SIZE);
+    const frag = document.createDocumentFragment();
+    for (const inv of chunk) {
+      const tr = document.createElement("tr");
+      tr.dataset.id = String(inv.id);
+      tr.innerHTML = `
+        <td>${inv.invoice_number.toLocaleString("fa-IR")}</td>
+        <td>${toJalali(inv.date)}</td>
+        <td>${fmtMoney(inv.total)}</td>
+        <td><span class="${inv.status === "paid" ? "paid" : "unpaid"}">${
+          inv.status === "paid" ? "پرداخت شده" : "پرداخت نشده"
+        }</span></td>
+        <td>
+          <div class="ci-actions">
+            <button class="btn ghost" data-act="edit">ویرایش</button>
+            <button class="btn danger" data-act="del">حذف</button>
+          </div>
+        </td>`;
       tr.querySelector('[data-act="edit"]')?.addEventListener("click", () =>
         navigate("invoice-editor", { customer, invoice: inv })
       );
@@ -171,8 +180,22 @@ ${STYLE}
           alert("حذف ناموفق بود: " + (err instanceof Error ? err.message : err));
         }
       });
-    });
+      frag.appendChild(tr);
+    }
+    tbody.appendChild(frag); // همه‌ی ردیف‌های این دسته یک‌جا به DOM اضافه می‌شوند
+    shownCount += chunk.length;
+    if (moreBox) {
+      if (shownCount < invoices.length) {
+        moreBox.innerHTML = `<button class="btn ghost" id="ci-more-btn" style="margin-top:10px">نمایش بیشتر</button>`;
+        moreBox
+          .querySelector("#ci-more-btn")
+          ?.addEventListener("click", () => appendRows(invoices));
+      } else {
+        moreBox.innerHTML = "";
+      }
+    }
   }
+
 }
 
 function escapeHtml(s: string): string {

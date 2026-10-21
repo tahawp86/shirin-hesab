@@ -2,14 +2,9 @@
 import { api, type Customer } from "../lib/api";
 import { navigate } from "../lib/router";
 
-// فرار از کاراکترهای HTML برای نمایش امن داده‌های کاربر
-function esc(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
+// بهینه‌سازی برای سیستم‌های ضعیف: ردیف‌ها با DocumentFragment و یک‌جا ساخته می‌شوند
+// و در لیست‌های بلند (بیش از PAGE_SIZE مشتری) بقیه با دکمه‌ی «نمایش بیشتر» می‌آیند.
+const PAGE_SIZE = 100;
 
 export function renderCustomers(root: HTMLElement): void {
   root.innerHTML = `
@@ -43,6 +38,9 @@ export function renderCustomers(root: HTMLElement): void {
         <tbody id="customer-rows"></tbody>
       </table>
       <p id="customer-empty" style="display:none; color: var(--muted);">هنوز مشتری‌ای ثبت نشده است.</p>
+      <div id="customer-more-wrap" style="display:none; text-align:center; margin-top:12px;">
+        <button class="btn ghost" id="customer-more">نمایش بیشتر</button>
+      </div>
     </div>
     <div id="customer-modal" class="modal-overlay" style="display:none">
       <div class="card modal-box">
@@ -65,6 +63,8 @@ export function renderCustomers(root: HTMLElement): void {
 
   const tbody = root.querySelector<HTMLTableSectionElement>("#customer-rows")!;
   const emptyMsg = root.querySelector<HTMLElement>("#customer-empty")!;
+  const moreWrap = root.querySelector<HTMLElement>("#customer-more-wrap")!;
+  const moreBtn = root.querySelector<HTMLButtonElement>("#customer-more")!;
   const modal = root.querySelector<HTMLElement>("#customer-modal")!;
   const modalTitle = root.querySelector<HTMLElement>("#modal-title")!;
   const nameIn = root.querySelector<HTMLInputElement>("#f-name")!;
@@ -75,35 +75,52 @@ export function renderCustomers(root: HTMLElement): void {
 
   let customers: Customer[] = [];
   let editing: Customer | null = null;
+  let visibleCount = PAGE_SIZE;
+
+  function buildRow(c: Customer): HTMLTableRowElement {
+    const tr = document.createElement("tr");
+
+    const tdName = document.createElement("td");
+    tdName.textContent = c.name;
+    const tdPhone = document.createElement("td");
+    tdPhone.textContent = c.phone;
+    const tdAddress = document.createElement("td");
+    tdAddress.textContent = c.address;
+
+    const tdOps = document.createElement("td");
+    const ops = document.createElement("div");
+    ops.className = "row-actions";
+    const editBtn = document.createElement("button");
+    editBtn.className = "btn ghost";
+    editBtn.textContent = "ویرایش";
+    editBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openModal(c);
+    });
+    const delBtn = document.createElement("button");
+    delBtn.className = "btn danger";
+    delBtn.textContent = "حذف";
+    delBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      void removeCustomer(c);
+    });
+    ops.append(editBtn, delBtn);
+    tdOps.appendChild(ops);
+
+    tr.append(tdName, tdPhone, tdAddress, tdOps);
+    tr.addEventListener("dblclick", () => navigate("customer-invoices", c));
+    return tr;
+  }
 
   function paint(): void {
-    tbody.innerHTML = customers
-      .map(
-        (c, i) => `
-        <tr data-i="${i}">
-          <td>${esc(c.name)}</td>
-          <td>${esc(c.phone)}</td>
-          <td>${esc(c.address)}</td>
-          <td><div class="row-actions">
-            <button class="btn ghost act-edit">ویرایش</button>
-            <button class="btn danger act-del">حذف</button>
-          </div></td>
-        </tr>`
-      )
-      .join("");
+    // ساخت همه‌ی ردیف‌های این صفحه در یک Fragment و الحاق یک‌جای آن‌ها به DOM
+    const frag = document.createDocumentFragment();
+    for (const c of customers.slice(0, visibleCount)) {
+      frag.appendChild(buildRow(c));
+    }
+    tbody.replaceChildren(frag);
     emptyMsg.style.display = customers.length ? "none" : "";
-    tbody.querySelectorAll("tr").forEach((tr) => {
-      const c = customers[Number(tr.dataset.i)];
-      tr.addEventListener("dblclick", () => navigate("customer-invoices", c));
-      tr.querySelector(".act-edit")!.addEventListener("click", (e) => {
-        e.stopPropagation();
-        openModal(c);
-      });
-      tr.querySelector(".act-del")!.addEventListener("click", (e) => {
-        e.stopPropagation();
-        removeCustomer(c);
-      });
-    });
+    moreWrap.style.display = customers.length > visibleCount ? "" : "none";
   }
 
   function openModal(c?: Customer): void {
@@ -136,6 +153,7 @@ export function renderCustomers(root: HTMLElement): void {
       } else {
         const created = await api.addCustomer(name, phone, address);
         customers.push(created);
+        visibleCount = customers.length; // مشتری تازه مثل قبل بلافاصله در لیست دیده شود
       }
       closeModal();
       paint();
@@ -158,6 +176,10 @@ export function renderCustomers(root: HTMLElement): void {
   }
 
   root.querySelector("#add-customer")!.addEventListener("click", () => openModal());
+  moreBtn.addEventListener("click", () => {
+    visibleCount += PAGE_SIZE;
+    paint();
+  });
   cancelBtn.addEventListener("click", closeModal);
   saveBtn.addEventListener("click", () => void saveCustomer());
   modal.addEventListener("click", (e) => {
@@ -166,6 +188,7 @@ export function renderCustomers(root: HTMLElement): void {
 
   async function load(): Promise<void> {
     tbody.innerHTML = `<tr><td colspan="4">در حال بارگذاری…</td></tr>`;
+    visibleCount = PAGE_SIZE;
     try {
       customers = await api.listCustomers();
     } catch {

@@ -3,6 +3,40 @@
 // قرار دادن تصویر در PDF با jsPDF و ذخیره از طریق کامندهای Tauri
 // (در صورت نبودن بک‌اند، fallback به doc.save()).
 import type { InvoiceItem } from "./api";
+import type { jsPDF as JsPdfDoc } from "jspdf";
+
+// jsPDF سنگین است و عمداً وارد باندل اولیه نمی‌شود؛ تایپش فقط type-only است
+// و خود کتابخانه (نسخه‌ی UMD در assets) تنبل و فقط موقع «خروجی PDF» لود می‌شود
+// تا بالا آمدن برنامه روی سیستم‌های ضعیف سبک و سریع بماند.
+type JsPdfCtor = new (options: { unit: "mm"; format: "a4"; orientation: "portrait" }) => JsPdfDoc;
+
+const getJsPdfGlobal = (): { jsPDF: JsPdfCtor } | undefined =>
+  (window as unknown as { jspdf?: { jsPDF: JsPdfCtor } }).jspdf;
+
+let jsPdfPromise: Promise<JsPdfCtor> | null = null;
+
+function loadJsPdf(): Promise<JsPdfCtor> {
+  const existing = getJsPdfGlobal()?.jsPDF;
+  if (existing) return Promise.resolve(existing);
+  if (!jsPdfPromise) {
+    jsPdfPromise = new Promise<JsPdfCtor>((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = "assets/jspdf.umd.min.js";
+      script.async = true;
+      script.onload = () => {
+        const ctor = getJsPdfGlobal()?.jsPDF;
+        if (ctor) resolve(ctor);
+        else reject(new Error("کتابخانه‌ی PDF لود نشد"));
+      };
+      script.onerror = () => reject(new Error("کتابخانه‌ی PDF لود نشد"));
+      document.head.appendChild(script);
+    }).catch((e: unknown) => {
+      jsPdfPromise = null; // تلاش بعدی بتواند دوباره سعی کند
+      throw e;
+    });
+  }
+  return jsPdfPromise;
+}
 
 export interface InvoicePdfData {
   invoiceNumber: string; // شماره فاکتور یا «خودکار»
@@ -221,7 +255,7 @@ export async function renderInvoiceCanvas(data: InvoicePdfData): Promise<HTMLCan
 /** ساخت PDF از فاکتور و ذخیره آن (Tauri dialog و در غیر این صورت دانلود مرورگر) */
 export async function exportInvoicePdf(data: InvoicePdfData): Promise<void> {
   const canvas = await renderInvoiceCanvas(data);
-  const { jsPDF } = await import("jspdf");
+  const jsPDF = await loadJsPdf();
   const doc = new jsPDF({ unit: "mm", format: "a4", orientation: "portrait" });
 
   const pageW = 210;

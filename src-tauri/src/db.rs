@@ -117,6 +117,9 @@ CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL DEFAULT ''
 );
+CREATE INDEX IF NOT EXISTS idx_invoices_customer ON invoices(customer_id);
+CREATE INDEX IF NOT EXISTS idx_invoice_items_invoice ON invoice_items(invoice_id);
+CREATE INDEX IF NOT EXISTS idx_payments_customer ON payments(customer_id);
 ";
 
 /// اتصال به SQLite — فایل دیتابیس در app_data کنار exe
@@ -124,6 +127,13 @@ pub fn init_db(app: &AppHandle) -> Result<Connection, Box<dyn std::error::Error>
     let dir = app.path().app_data_dir()?;
     std::fs::create_dir_all(&dir)?;
     let mut conn = Connection::open(dir.join("shirin-hesab.db"))?;
+    // بهینه‌سازی SQLite برای سیستم‌های ضعیف (WAL + کش بزرگ‌تر + temp در حافظه)
+    conn.execute_batch(
+        "PRAGMA journal_mode=WAL; \
+         PRAGMA synchronous=NORMAL; \
+         PRAGMA cache_size=-8000; \
+         PRAGMA temp_store=MEMORY;",
+    )?;
     conn.execute_batch(SCHEMA)?;
     // مایگریشن: حذف ستون rolled_into (منطق تجمیع کاملاً حذف شد)
     let has_col: bool = conn.query_row(
@@ -163,21 +173,38 @@ pub fn init_db(app: &AppHandle) -> Result<Connection, Box<dyn std::error::Error>
 /// تا دوباره شمرده نشود (تطبیق با نام دقیق).
 pub const BALANCE_ITEM_NAME: &str = "مانده حساب قبلی";
 
-fn load_items(conn: &Connection, invoice_id: i64) -> Result<Vec<ItemView>, String> {
+/// آیتم‌های همه‌ی فاکتورهای یک مشتری با یک کوئری — گروه‌بندی‌شده بر اساس invoice_id
+/// (بهینه‌سازی: جایگزین کوئری جدا برای هر فاکتور در لیست؛ ترتیب آیتم‌های هر فاکتور بر اساس id)
+fn load_items_grouped(
+    conn: &Connection,
+    customer_id: i64,
+) -> Result<std::collections::HashMap<i64, Vec<ItemView>>, String> {
     let mut stmt = conn
-        .prepare("SELECT name, unit_price, qty FROM invoice_items WHERE invoice_id = ?1 ORDER BY id")
+        .prepare(
+            "SELECT invoice_id, name, unit_price, qty FROM invoice_items \
+             WHERE invoice_id IN (SELECT id FROM invoices WHERE customer_id = ?1) \
+             ORDER BY invoice_id, id",
+        )
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map(params![invoice_id], |r| {
-            Ok(ItemView {
-                name: r.get(0)?,
-                unit_price: r.get(1)?,
-                qty: r.get(2)?,
-            })
+        .query_map(params![customer_id], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                ItemView {
+                    name: r.get(1)?,
+                    unit_price: r.get(2)?,
+                    qty: r.get(3)?,
+                },
+            ))
         })
         .map_err(|e| e.to_string())?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|e| e.to_string())
+    let mut map: std::collections::HashMap<i64, Vec<ItemView>> =
+        std::collections::HashMap::new();
+    for row in rows {
+        let (invoice_id, item) = row.map_err(|e| e.to_string())?;
+        map.entry(invoice_id).or_default().push(item);
+    }
+    Ok(map)
 }
 
 fn insert_items(conn: &Connection, invoice_id: i64, items: &[NewItem]) -> Result<(), String> {
@@ -428,10 +455,11 @@ pub fn list_invoices(
             ))
         })
         .map_err(|e| e.to_string())?;
+    let mut items_by_invoice = load_items_grouped(&conn, customer_id)?;
     let mut out = Vec::new();
     for inv in inv_rows {
         let (id, cid, invoice_number, date, paid_amount) = inv.map_err(|e| e.to_string())?;
-        let items = load_items(&conn, id)?;
+        let items = items_by_invoice.remove(&id).unwrap_or_default();
         let total = items_total(&items);
         out.push(InvoiceView {
             id,
@@ -728,4 +756,355 @@ pub fn write_pdf_file(path: String, data: String) -> Result<(), String> {
         .decode(&data)
         .map_err(|e| format!("base64 decode failed: {e}"))?;
     std::fs::write(&path, &bytes).map_err(|e| e.to_string())
+}
+
+// ---------- پشتیبان‌گیری و بازیابی (Export / Import) ----------
+
+const BACKUP_TABLES: [&str; 5] = [
+    "customers",
+    "products",
+    "invoices",
+    "invoice_items",
+    "payments",
+];
+
+/// خلاصه‌ی فایل پشتیبان برای نمایش تأیید به کاربر (قرارداد فرانت)
+#[derive(Debug, Clone, Serialize)]
+pub struct BackupInfo {
+    pub path: String,
+    pub exported_at: String,
+    pub currency: String,
+    pub counts: BackupCounts,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BackupCounts {
+    pub customers: usize,
+    pub products: usize,
+    pub invoices: usize,
+    pub payments: usize,
+}
+
+/// خواندن کل یک جدول به‌صورت آرایه‌ی JSON از آبجکت‌های سطر (با ID اصلی)
+fn read_table_rows(conn: &Connection, table: &str) -> Result<Vec<serde_json::Value>, String> {
+    let mut stmt = conn
+        .prepare(&format!("SELECT * FROM {table} ORDER BY id"))
+        .map_err(|e| e.to_string())?;
+    let col_names: Vec<String> = stmt
+        .column_names()
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+        let mut obj = serde_json::Map::new();
+        for (i, name) in col_names.iter().enumerate() {
+            use rusqlite::types::ValueRef;
+            let v = match row.get_ref(i).map_err(|e| e.to_string())? {
+                ValueRef::Null => serde_json::Value::Null,
+                ValueRef::Integer(n) => serde_json::json!(n),
+                ValueRef::Real(f) => serde_json::json!(f),
+                ValueRef::Text(t) => {
+                    serde_json::json!(String::from_utf8_lossy(t).into_owned())
+                }
+                ValueRef::Blob(b) => {
+                    use base64::{engine::general_purpose::STANDARD, Engine as _};
+                    serde_json::json!(STANDARD.encode(b))
+                }
+            };
+            obj.insert(name.clone(), v);
+        }
+        out.push(serde_json::Value::Object(obj));
+    }
+    Ok(out)
+}
+
+/// ساخت و ذخیره‌ی فایل پشتیبان JSON از همه‌ی جدول‌ها — مسیر انتخابی یا None (انصراف)
+#[tauri::command]
+pub fn export_backup(
+    app: AppHandle,
+    state: State<'_, DbState>,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::{DialogExt, FilePath};
+    let conn = lock(&state)?;
+    let mut data = serde_json::Map::new();
+    for t in BACKUP_TABLES {
+        let rows = read_table_rows(&conn, t)?;
+        data.insert(t.to_string(), serde_json::Value::Array(rows));
+    }
+    // settings به‌صورت آبجکت key → value
+    let mut settings = serde_json::Map::new();
+    {
+        let mut stmt = conn
+            .prepare("SELECT key, value FROM settings ORDER BY key")
+            .map_err(|e| e.to_string())?;
+        let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+        while let Some(r) = rows.next().map_err(|e| e.to_string())? {
+            let k: String = r.get(0).map_err(|e| e.to_string())?;
+            let v: String = r.get(1).map_err(|e| e.to_string())?;
+            settings.insert(k, serde_json::json!(v));
+        }
+    }
+    data.insert("settings".to_string(), serde_json::Value::Object(settings));
+    // واحد پول ذخیره‌شده‌ی فعلی: گارد مهاجرت ست شده باشد یعنی داده‌ها ریالی‌اند
+    let currency = if read_setting(&conn, "currency_rial_migrated")? == "1" {
+        "rial"
+    } else {
+        "toman"
+    };
+    let backup = serde_json::json!({
+        "app": "ShirinHesab",
+        "kind": "backup",
+        "format": 1,
+        "currency": currency,
+        "exported_at": Local::now().to_rfc3339(),
+        "data": serde_json::Value::Object(data),
+    });
+    let text = serde_json::to_string_pretty(&backup).map_err(|e| e.to_string())?;
+    drop(conn);
+    let default_name = format!("shirin-hesab-backup-{}.json", today_iso());
+    let picked = app
+        .dialog()
+        .file()
+        .add_filter("JSON", &["json"])
+        .set_file_name(&default_name)
+        .blocking_save_file();
+    let path = match picked {
+        Some(FilePath::Path(p)) => p,
+        _ => return Ok(None),
+    };
+    std::fs::write(&path, text)
+        .map_err(|e| format!("نوشتن فایل پشتیبان ناموفق بود: {e}"))?;
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
+
+/// پشتیبان خوانده و اعتبارسنجی‌شده (بدون اعمال هیچ تغییری)
+struct LoadedBackup {
+    exported_at: String,
+    currency: String,
+    data: serde_json::Map<String, serde_json::Value>,
+}
+
+fn load_backup_file(path: &str) -> Result<LoadedBackup, String> {
+    let raw = std::fs::read_to_string(path).map_err(|_| {
+        "خواندن فایل پشتیبان ناموفق بود؛ فایل پیدا نشد یا قابل خواندن نیست.".to_string()
+    })?;
+    let root: serde_json::Value = serde_json::from_str(&raw).map_err(|_| {
+        "فایل پشتیبان معتبر نیست: محتوای JSON خراب یا ناقص است.".to_string()
+    })?;
+    let obj = root.as_object().ok_or_else(|| {
+        "فایل پشتیبان معتبر نیست: ساختار اصلی فایل نادرست است.".to_string()
+    })?;
+    if obj.get("app").and_then(|v| v.as_str()) != Some("ShirinHesab") {
+        return Err("این فایل، پشتیبان «شیرین‌حساب» نیست.".to_string());
+    }
+    if obj.get("kind").and_then(|v| v.as_str()) != Some("backup") {
+        return Err("این فایل، فایل پشتیبان نیست.".to_string());
+    }
+    if obj.get("format").and_then(|v| v.as_i64()) != Some(1) {
+        return Err(
+            "نسخه‌ی قالب این پشتیبان پشتیبانی نمی‌شود؛ برنامه را به‌روز کنید.".to_string(),
+        );
+    }
+    let currency = obj.get("currency").and_then(|v| v.as_str()).unwrap_or("");
+    if currency != "rial" && currency != "toman" {
+        return Err("واحد پول فایل پشتیبان ناشناخته است.".to_string());
+    }
+    let exported_at = obj
+        .get("exported_at")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let data = obj.get("data").and_then(|v| v.as_object()).ok_or_else(|| {
+        "فایل پشتیبان ناقص است: بخش داده‌ها وجود ندارد.".to_string()
+    })?;
+    for t in BACKUP_TABLES {
+        match data.get(t) {
+            Some(serde_json::Value::Array(rows))
+                if rows.iter().all(|r| r.is_object()) => {}
+            _ => {
+                return Err(format!(
+                    "فایل پشتیبان ناقص است: بخش «{t}» وجود ندارد یا نادرست است."
+                ))
+            }
+        }
+    }
+    match data.get("settings") {
+        Some(serde_json::Value::Object(_)) => {}
+        _ => {
+            return Err(
+                "فایل پشتیبان ناقص است: بخش تنظیمات وجود ندارد.".to_string(),
+            )
+        }
+    }
+    Ok(LoadedBackup {
+        exported_at,
+        currency: currency.to_string(),
+        data: data.clone(),
+    })
+}
+
+/// انتخاب فایل پشتیبان و اعتبارسنجی — فقط خلاصه برمی‌گردد، هیچ تغییری اعمال نمی‌شود
+#[tauri::command]
+pub fn pick_and_validate_backup(app: AppHandle) -> Result<Option<BackupInfo>, String> {
+    use tauri_plugin_dialog::{DialogExt, FilePath};
+    let picked = app
+        .dialog()
+        .file()
+        .add_filter("JSON", &["json"])
+        .blocking_pick_file();
+    let path = match picked {
+        Some(FilePath::Path(p)) => p,
+        _ => return Ok(None),
+    };
+    let path_str = path.to_string_lossy().into_owned();
+    let backup = load_backup_file(&path_str)?;
+    let count = |t: &str| {
+        backup
+            .data
+            .get(t)
+            .and_then(|v| v.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0)
+    };
+    Ok(Some(BackupInfo {
+        path: path_str,
+        exported_at: backup.exported_at,
+        currency: backup.currency,
+        counts: BackupCounts {
+            customers: count("customers"),
+            products: count("products"),
+            invoices: count("invoices"),
+            payments: count("payments"),
+        },
+    }))
+}
+
+/// ستون‌هایی که هنگام بازیابی پشتیبان تومانی باید ×۱۰ شوند
+fn is_amount_column(table: &str, column: &str) -> bool {
+    matches!(
+        (table, column),
+        ("products", "unit_price")
+            | ("invoice_items", "unit_price")
+            | ("invoices", "paid_amount")
+            | ("payments", "amount")
+    )
+}
+
+fn insert_backup_row(
+    tx: &rusqlite::Transaction<'_>,
+    table: &str,
+    row: &serde_json::Value,
+    mult: f64,
+) -> Result<(), String> {
+    let obj = row
+        .as_object()
+        .ok_or_else(|| format!("سطر نامعتبر در بخش «{table}»."))?;
+    if obj.is_empty() {
+        return Err(format!("سطر خالی در بخش «{table}»."));
+    }
+    let cols: Vec<&String> = obj.keys().collect();
+    let col_sql = cols
+        .iter()
+        .map(|c| format!("\"{c}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let marks = (1..=cols.len())
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!("INSERT INTO {table} ({col_sql}) VALUES ({marks})");
+    let mut values: Vec<rusqlite::types::Value> = Vec::with_capacity(cols.len());
+    for c in &cols {
+        let raw = &obj[*c];
+        let v = match raw {
+            serde_json::Value::Null => rusqlite::types::Value::Null,
+            serde_json::Value::Bool(b) => {
+                rusqlite::types::Value::Integer(if *b { 1 } else { 0 })
+            }
+            serde_json::Value::Number(n) => {
+                if mult != 1.0 && is_amount_column(table, c) {
+                    let f = n
+                        .as_f64()
+                        .ok_or_else(|| format!("مبلغ نامعتبر در بخش «{table}»."))?;
+                    rusqlite::types::Value::Real(f * mult)
+                } else if let Some(i) = n.as_i64() {
+                    rusqlite::types::Value::Integer(i)
+                } else if let Some(f) = n.as_f64() {
+                    rusqlite::types::Value::Real(f)
+                } else {
+                    return Err(format!("عدد نامعتبر در بخش «{table}»."));
+                }
+            }
+            serde_json::Value::String(s) => rusqlite::types::Value::Text(s.clone()),
+            _ => return Err(format!("مقدار نامعتبر در بخش «{table}».")),
+        };
+        values.push(v);
+    }
+    tx.execute(&sql, rusqlite::params_from_iter(values.iter()))
+        .map_err(|e| {
+            format!("درج داده‌های «{table}» ناموفق بود؛ هیچ تغییری اعمال نشد. ({e})")
+        })?;
+    Ok(())
+}
+
+/// اعمال بازیابی داخل تراکنشِ باز — هر خطا یعنی rollback کامل توسط صدازننده
+fn apply_import_tx(
+    tx: &rusqlite::Transaction<'_>,
+    backup: &LoadedBackup,
+    mult: f64,
+) -> Result<(), String> {
+    // حذف داده‌های فعلی: اول جدول‌های فرزند، بعد والدها
+    for t in ["invoice_items", "payments", "invoices", "products", "customers"] {
+        tx.execute(&format!("DELETE FROM {t}"), [])
+            .map_err(|e| format!("پاک‌کردن داده‌های فعلی («{t}») ناموفق بود: {e}"))?;
+    }
+    // درج سطرهای پشتیبان با ID اصلی: اول والدها، بعد فرزندها
+    for t in ["customers", "products", "invoices", "invoice_items", "payments"] {
+        let rows = backup
+            .data
+            .get(t)
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        for row in &rows {
+            insert_backup_row(tx, t, row, mult)?;
+        }
+    }
+    // تنظیمات از پشتیبان برمی‌گردد — جز گارد مهاجرت ریال که محلی و دست‌نخورده می‌ماند
+    if let Some(settings) = backup.data.get("settings").and_then(|v| v.as_object()) {
+        for (k, v) in settings {
+            if k == "currency_rial_migrated" {
+                continue;
+            }
+            let val = v
+                .as_str()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| v.to_string());
+            tx.execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2) \
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![k, val],
+            )
+            .map_err(|e| format!("بازیابی تنظیمات ناموفق بود: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+/// بازیابی کامل از فایل پشتیبان — در یک تراکنش؛ پشتیبان تومانی هنگام درج ×۱۰ می‌شود
+#[tauri::command]
+pub fn apply_backup_import(state: State<'_, DbState>, path: String) -> Result<(), String> {
+    let backup = load_backup_file(&path)?;
+    let mult: f64 = if backup.currency == "toman" { 10.0 } else { 1.0 };
+    let mut conn = lock(&state)?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("شروع تراکنش بازیابی ناموفق بود: {e}"))?;
+    // اگر apply_import_tx خطا بدهد، tx بدون commit رها و همه‌چیز rollback می‌شود
+    apply_import_tx(&tx, &backup, mult)?;
+    tx.commit()
+        .map_err(|e| format!("ثبت نهایی بازیابی ناموفق بود: {e}"))?;
+    Ok(())
 }

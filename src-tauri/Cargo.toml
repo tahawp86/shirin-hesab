@@ -1,6 +1,6 @@
 [package]
 name = "shirin-hesab"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2021"
 description = "شیرین حساب — مدیریت حساب فروشگاه کیک و شیرینی"
 
@@ -31,3 +31,10 @@ windows-sys = { version = "0.59", features = [
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+
+# بهینه‌سازی برای سیستم‌های ضعیف: باینری کوچک‌تر و اجرای سریع‌تر
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+opt-level = 3

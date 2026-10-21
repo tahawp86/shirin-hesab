@@ -30,7 +30,7 @@ body {
 }
 .nav-btn.active, .nav-btn:hover { background: var(--accent); color: #fff; }
 #app { padding: 18px; max-width: 1100px; margin: 0 auto; }
-.card { background: var(--card); border-radius: 14px; padding: 16px; box-shadow: 0 2px 10px #0001; margin-bottom: 14px; }
+.card { background: var(--card); border-radius: 14px; padding: 16px; box-shadow: 0 1px 3px #0001; margin-bottom: 14px; }
 .btn {
   border: none; border-radius: 10px; padding: 9px 18px; font-size: 14px; cursor: pointer; font-family: inherit;
   background: var(--accent); color: #fff;
@@ -47,3 +47,7 @@ input, select {
 }
 .paid { color: var(--ok); font-weight: 700; }
 .unpaid { color: var(--danger); font-weight: 700; }
+/* سیستم‌های ضعیف: اگر کاربر کاهش حرکت را ترجیح می‌دهد، ترنزیشن/انیمیشن‌ها خاموش */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
+}

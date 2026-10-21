@@ -11,6 +11,8 @@ export interface Invoice {
 }
 export interface CustomerSummary { total_invoiced: number; total_paid: number; debt: number; }
 export interface ConfectionerInfo { name: string; phone: string; }
+export interface BackupCounts { customers: number; products: number; invoices: number; payments: number; }
+export interface BackupInfo { path: string; exported_at: string; currency: string; counts: BackupCounts; }
 export interface UpdateInfo { version: string; notes: string; published_at: string; }
 export type UpdateReport =
   | { status: "ok"; prev_version: string; new_version: string; changelog: string }
@@ -57,4 +59,11 @@ export const api = {
   getSetting: (key: string): Promise<string | null> => invoke("get_setting", { key }),
   setSetting: (key: string, value: string): Promise<void> =>
     invoke("set_setting", { key, value }),
+
+  // پشتیبان‌گیری و انتقال (بک‌اند: EAgent1)
+  exportBackup: (): Promise<string | null> => invoke("export_backup"),
+  pickAndValidateBackup: (): Promise<BackupInfo | null> =>
+    invoke("pick_and_validate_backup"),
+  applyBackupImport: (path: string): Promise<void> =>
+    invoke("apply_backup_import", { path }),
 };
