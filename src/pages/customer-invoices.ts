@@ -3,6 +3,7 @@
 import { api, Customer, Invoice } from "../lib/api";
 import { fmtMoney, toJalali } from "../lib/jalali";
 import { navigate } from "../lib/router";
+import { exportInvoicePdf } from "../lib/pdf";
 
 const STYLE = `
 <style>
@@ -201,6 +202,7 @@ ${STYLE}
         }</span></td>
         <td>
           <div class="ci-actions">
+            <button class="btn ghost" data-act="pdf">خروجی PDF</button>
             <button class="btn ghost" data-act="edit">ویرایش</button>
             <button class="btn danger" data-act="del">حذف</button>
           </div>
@@ -208,6 +210,31 @@ ${STYLE}
       tr.querySelector('[data-act="edit"]')?.addEventListener("click", () =>
         navigate("invoice-editor", { customer, invoice: inv })
       );
+      tr.querySelector('[data-act="pdf"]')?.addEventListener("click", async (e) => {
+        const btn = e.currentTarget as HTMLButtonElement;
+        btn.disabled = true;
+        try {
+          let conf: { name: string; phone: string } | null = null;
+          try {
+            conf = await api.getConfectionerInfo();
+          } catch {
+            conf = null; // بدون اطلاعات قناد ادامه می‌دهیم
+          }
+          await exportInvoicePdf({
+            invoiceNumber: inv.invoice_number.toLocaleString("fa-IR", { useGrouping: false }),
+            fileNumber: String(inv.invoice_number),
+            dateJalali: toJalali(inv.date),
+            customerName: customer.name,
+            items: inv.items,
+            confectionerName: conf?.name,
+            confectionerPhone: conf?.phone,
+          });
+        } catch (err) {
+          alert("خطا در ساخت PDF: " + (err instanceof Error ? err.message : err));
+        } finally {
+          btn.disabled = false;
+        }
+      });
       tr.querySelector('[data-act="del"]')?.addEventListener("click", async () => {
         if (!confirm(`فاکتور شماره‌ی ${inv.invoice_number.toLocaleString("fa-IR")} حذف شود؟`))
           return;
