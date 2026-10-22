@@ -45,7 +45,12 @@
     },
     "resources": {
       "../version.txt": "version.txt",
-      "../CHANGELOG_FA.md": "CHANGELOG_FA.md"
+      "../CHANGELOG_FA.md": "CHANGELOG_FA.md",
+      "../LICENSE": "LICENSE",
+      "../LICENSE-MIT": "LICENSE-MIT",
+      "../LICENSE-APACHE": "LICENSE-APACHE",
+      "../COPYRIGHT": "COPYRIGHT",
+      "../THIRD-PARTY-NOTICES.md": "THIRD-PARTY-NOTICES.md"
     },
     "externalBin": [
       "binaries/ShirinHesabUpdater"
@@ -53,5 +58,5 @@
   },
   "identifier": "ir.shirinhesab.app",
   "productName": "ShirinHesab",
-  "version": "0.7.1"
+  "version": "0.8.0"
 }

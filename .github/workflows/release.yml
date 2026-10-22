@@ -79,6 +79,7 @@ jobs:
           mkdir -p stage update-dist
           cp ./artifact/*.exe stage/
           cp CHANGELOG_FA.md stage/
+          cp LICENSE LICENSE-MIT LICENSE-APACHE COPYRIGHT THIRD-PARTY-NOTICES.md stage/
           PREV_ARG=""
           if [ -f prev/manifest.json ]; then PREV_ARG="--prev-manifest prev/manifest.json"; fi
           python3 tools/make_feed.py --build-dir stage --version "$VERSION" \

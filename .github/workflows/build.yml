@@ -59,6 +59,7 @@ jobs:
           mkdir -p update-staging build-meta
           cp src-tauri/target/release/*.exe update-staging/
           cp CHANGELOG_FA.md update-staging/
+          cp LICENSE LICENSE-MIT LICENSE-APACHE COPYRIGHT THIRD-PARTY-NOTICES.md update-staging/
           # هلپر آپدیت (sidecar) باید کنار exe اصلی استیج شده باشد تا داخل بسته‌های آپدیت هم بیاید
           if [ ! -f update-staging/ShirinHesabUpdater.exe ]; then
             echo "::error::ShirinHesabUpdater.exe در خروجی بیلد (target/release) نیست."

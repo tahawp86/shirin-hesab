@@ -19,6 +19,8 @@ pub struct Customer {
     pub name: String,
     pub phone: String,
     pub address: String,
+    /// سقف اعتبار (۰ = بدون سقف)
+    pub credit_limit: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,6 +28,14 @@ pub struct Product {
     pub id: i64,
     pub name: String,
     pub unit_price: f64,
+    /// واحد فروش (پیش‌فرض «عدد»)
+    pub unit: String,
+    /// قیمت خرید (مبنای محاسبه‌ی سود)
+    pub cost_price: f64,
+    /// موجودی فعلی
+    pub stock: f64,
+    /// حداقل موجودی برای هشدار
+    pub min_stock: f64,
 }
 
 /// قلم ورودی فاکتور از سمت فرانت
@@ -34,6 +44,9 @@ pub struct NewItem {
     pub name: String,
     pub unit_price: f64,
     pub qty: f64,
+    /// تخفیف سطری درصدی (۰ تا ۱۰۰) — نبودش در payload یعنی ۰
+    #[serde(default)]
+    pub discount_percent: f64,
 }
 
 /// قلم فاکتور در خروجی (مطابق قرارداد فرانت: بدون id)
@@ -42,6 +55,7 @@ pub struct ItemView {
     pub name: String,
     pub unit_price: f64,
     pub qty: f64,
+    pub discount_percent: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,6 +68,10 @@ pub struct InvoiceView {
     pub total: f64,
     pub paid_amount: f64,
     pub status: String, // "paid" | "unpaid"
+    /// تخفیف کلی فاکتور
+    pub discount_amount: f64,
+    /// تاریخ سررسید (خالی = ندارد)
+    pub due_date: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,36 +101,45 @@ fn today_iso() -> String {
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS customers (
-    id      INTEGER PRIMARY KEY AUTOINCREMENT,
-    name    TEXT NOT NULL,
-    phone   TEXT NOT NULL DEFAULT '',
-    address TEXT NOT NULL DEFAULT ''
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    name         TEXT NOT NULL,
+    phone        TEXT NOT NULL DEFAULT '',
+    address      TEXT NOT NULL DEFAULT '',
+    credit_limit REAL NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS products (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     name       TEXT NOT NULL,
-    unit_price REAL NOT NULL DEFAULT 0
+    unit_price REAL NOT NULL DEFAULT 0,
+    unit       TEXT NOT NULL DEFAULT 'عدد',
+    cost_price REAL NOT NULL DEFAULT 0,
+    stock      REAL NOT NULL DEFAULT 0,
+    min_stock  REAL NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS invoices (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    customer_id    INTEGER NOT NULL,
-    invoice_number INTEGER NOT NULL UNIQUE,
-    date           TEXT NOT NULL,
-    paid_amount    REAL NOT NULL DEFAULT 0
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    customer_id     INTEGER NOT NULL,
+    invoice_number  INTEGER NOT NULL UNIQUE,
+    date            TEXT NOT NULL,
+    paid_amount     REAL NOT NULL DEFAULT 0,
+    discount_amount REAL NOT NULL DEFAULT 0,
+    due_date        TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS invoice_items (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    invoice_id  INTEGER NOT NULL,
-    name        TEXT NOT NULL,
-    unit_price  REAL NOT NULL,
-    qty         REAL NOT NULL
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    invoice_id       INTEGER NOT NULL,
+    name             TEXT NOT NULL,
+    unit_price       REAL NOT NULL,
+    qty              REAL NOT NULL,
+    discount_percent REAL NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS payments (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     customer_id INTEGER NOT NULL,
     amount      REAL NOT NULL,
     date        TEXT NOT NULL,
-    note        TEXT NOT NULL DEFAULT ''
+    note        TEXT NOT NULL DEFAULT '',
+    method      TEXT NOT NULL DEFAULT 'نقد'
 );
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
@@ -122,6 +149,24 @@ CREATE INDEX IF NOT EXISTS idx_invoices_customer ON invoices(customer_id);
 CREATE INDEX IF NOT EXISTS idx_invoice_items_invoice ON invoice_items(invoice_id);
 CREATE INDEX IF NOT EXISTS idx_payments_customer ON payments(customer_id);
 ";
+
+/// افزودن ستون تازه به دیتابیس‌های موجود، فقط اگر نیست (پیش‌فرض امن؛ دیتای فعلی سالم می‌ماند)
+fn ensure_column(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    ddl: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let has: bool = conn.query_row(
+        &format!("SELECT COUNT(*) > 0 FROM pragma_table_info('{table}') WHERE name = '{column}'"),
+        [],
+        |r| r.get(0),
+    )?;
+    if !has {
+        conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {ddl}"), [])?;
+    }
+    Ok(())
+}
 
 /// اتصال به SQLite — فایل دیتابیس در app_data کنار exe
 pub fn init_db(app: &AppHandle) -> Result<Connection, Box<dyn std::error::Error>> {
@@ -136,6 +181,16 @@ pub fn init_db(app: &AppHandle) -> Result<Connection, Box<dyn std::error::Error>
          PRAGMA temp_store=MEMORY;",
     )?;
     conn.execute_batch(SCHEMA)?;
+    // مایگریشن 0.8.0: ستون‌های تازه (دیتابیس‌های قدیمی با پیش‌فرض امن کامل می‌شوند)
+    ensure_column(&conn, "customers", "credit_limit", "credit_limit REAL NOT NULL DEFAULT 0")?;
+    ensure_column(&conn, "products", "unit", "unit TEXT NOT NULL DEFAULT 'عدد'")?;
+    ensure_column(&conn, "products", "cost_price", "cost_price REAL NOT NULL DEFAULT 0")?;
+    ensure_column(&conn, "products", "stock", "stock REAL NOT NULL DEFAULT 0")?;
+    ensure_column(&conn, "products", "min_stock", "min_stock REAL NOT NULL DEFAULT 0")?;
+    ensure_column(&conn, "invoices", "discount_amount", "discount_amount REAL NOT NULL DEFAULT 0")?;
+    ensure_column(&conn, "invoices", "due_date", "due_date TEXT NOT NULL DEFAULT ''")?;
+    ensure_column(&conn, "invoice_items", "discount_percent", "discount_percent REAL NOT NULL DEFAULT 0")?;
+    ensure_column(&conn, "payments", "method", "method TEXT NOT NULL DEFAULT 'نقد'")?;
     // مایگریشن: حذف ستون rolled_into (منطق تجمیع کاملاً حذف شد)
     let has_col: bool = conn.query_row(
         "SELECT COUNT(*) > 0 FROM pragma_table_info('invoices') WHERE name = 'rolled_into'",
@@ -195,7 +250,7 @@ fn load_items_grouped(
 ) -> Result<std::collections::HashMap<i64, Vec<ItemView>>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT invoice_id, name, unit_price, qty FROM invoice_items \
+            "SELECT invoice_id, name, unit_price, qty, discount_percent FROM invoice_items \
              WHERE invoice_id IN (SELECT id FROM invoices WHERE customer_id = ?1) \
              ORDER BY invoice_id, id",
         )
@@ -208,6 +263,7 @@ fn load_items_grouped(
                     name: r.get(1)?,
                     unit_price: r.get(2)?,
                     qty: r.get(3)?,
+                    discount_percent: r.get(4)?,
                 },
             ))
         })
@@ -224,48 +280,110 @@ fn load_items_grouped(
 fn insert_items(conn: &Connection, invoice_id: i64, items: &[NewItem]) -> Result<(), String> {
     for it in items {
         conn.execute(
-            "INSERT INTO invoice_items (invoice_id, name, unit_price, qty) VALUES (?1, ?2, ?3, ?4)",
-            params![invoice_id, it.name, it.unit_price, it.qty],
+            "INSERT INTO invoice_items (invoice_id, name, unit_price, qty, discount_percent) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![invoice_id, it.name, it.unit_price, it.qty, it.discount_percent],
         )
         .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
-fn items_total(items: &[ItemView]) -> f64 {
-    items.iter().map(|it| it.unit_price * it.qty).sum()
+/// مبلغ خالص یک قلم بعد از تخفیف سطری — ردیف «مانده حساب قبلی» از تخفیف مستثناست
+fn item_net(name: &str, unit_price: f64, qty: f64, discount_percent: f64) -> f64 {
+    let gross = unit_price * qty;
+    if name == BALANCE_ITEM_NAME {
+        gross
+    } else {
+        gross * (1.0 - discount_percent / 100.0)
+    }
 }
 
-fn status_of(total: f64, paid_amount: f64) -> String {
-    if paid_amount >= total {
+fn items_net_total(items: &[ItemView]) -> f64 {
+    items
+        .iter()
+        .map(|it| item_net(&it.name, it.unit_price, it.qty, it.discount_percent))
+        .sum()
+}
+
+fn items_balance_total(items: &[ItemView]) -> f64 {
+    items
+        .iter()
+        .filter(|it| it.name == BALANCE_ITEM_NAME)
+        .map(|it| it.unit_price * it.qty)
+        .sum()
+}
+
+/// جمع فاکتور = مجموع خالص آیتم‌ها (بعد از تخفیف سطری) − تخفیف کلی فاکتور
+fn invoice_total_of(items: &[ItemView], discount_amount: f64) -> f64 {
+    items_net_total(items) - discount_amount
+}
+
+/// مبنای بدهی فاکتور = جمع فاکتور − آیتم‌های «مانده حساب قبلی» (دوباره شمرده نمی‌شوند)
+fn invoice_basis_of(items: &[ItemView], discount_amount: f64) -> f64 {
+    invoice_total_of(items, discount_amount) - items_balance_total(items)
+}
+
+fn status_of(basis: f64, paid_amount: f64) -> String {
+    if paid_amount >= basis {
         "paid".to_string()
     } else {
         "unpaid".to_string()
     }
 }
 
+/// محاسبه‌ی یک فاکتور: مبنای بدهی (جمع با تخفیف‌ها، بدون «مانده حساب قبلی»)
+struct InvCalc {
+    id: i64,
+    invoice_number: i64,
+    date: String,
+    paid_amount: f64,
+    basis: f64,
+}
+
+/// محاسبه‌ی همه‌ی فاکتورهای مشتری با SQL گروهی — منبع واحد حقیقت فرمول‌ها
+/// (خلاصه حساب، تخصیص پرداخت، گزارش بدهکاران و صورت‌حساب همه از همین می‌خوانند)
+fn invoice_calcs(conn: &Connection, customer_id: i64) -> Result<Vec<InvCalc>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT i.id, i.invoice_number, i.date, i.paid_amount, i.discount_amount, \
+                    COALESCE(SUM(CASE WHEN it.name = ?2 THEN it.unit_price * it.qty \
+                                      ELSE it.unit_price * it.qty * (1 - it.discount_percent / 100.0) END), 0), \
+                    COALESCE(SUM(CASE WHEN it.name = ?2 THEN it.unit_price * it.qty ELSE 0 END), 0) \
+             FROM invoices i LEFT JOIN invoice_items it ON it.invoice_id = i.id \
+             WHERE i.customer_id = ?1 \
+             GROUP BY i.id ORDER BY i.date ASC, i.id ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![customer_id, BALANCE_ITEM_NAME], |r| {
+            let discount: f64 = r.get(4)?;
+            let net: f64 = r.get(5)?;
+            let balance: f64 = r.get(6)?;
+            Ok(InvCalc {
+                id: r.get(0)?,
+                invoice_number: r.get(1)?,
+                date: r.get(2)?,
+                paid_amount: r.get(3)?,
+                basis: net - discount - balance,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())
+}
+
 fn summary_for(conn: &Connection, customer_id: i64) -> Result<Summary, String> {
-    // جمع کل فاکتورها (برای نمایش) — آیتم‌های «مانده حساب قبلی» جزوش نیستند،
+    let calcs = invoice_calcs(conn, customer_id)?;
+    // جمع کل فاکتورها (برای نمایش) — مبنای هر فاکتور یعنی بدون «مانده حساب قبلی»،
     // وگرنه بدهی قبلی دوبار شمرده می‌شود (یک بار در فاکتور خودش، یک بار در فاکتور جدید)
-    let total_all: f64 = conn
-        .query_row(
-            "SELECT COALESCE(SUM(it.unit_price * it.qty), 0) \
-             FROM invoice_items it JOIN invoices i ON i.id = it.invoice_id \
-             WHERE i.customer_id = ?1",
-            params![customer_id],
-            |r| r.get(0),
-        )
-        .map_err(|e| e.to_string())?;
-    let balance_total: f64 = conn
-        .query_row(
-            "SELECT COALESCE(SUM(it.unit_price * it.qty), 0) \
-             FROM invoice_items it JOIN invoices i ON i.id = it.invoice_id \
-             WHERE i.customer_id = ?1 AND it.name = ?2",
-            params![customer_id, BALANCE_ITEM_NAME],
-            |r| r.get(0),
-        )
-        .map_err(|e| e.to_string())?;
-    let total_invoiced = total_all - balance_total;
+    let total_invoiced: f64 = calcs.iter().map(|c| c.basis).sum();
+    // بدهکاری = جمع «پرداخت‌نشده»‌ی فاکتورها، فاکتوربه‌فاکتور (منفی نمی‌شود):
+    // برای هر فاکتور: ‎max(0, مبنای فاکتور − paid_amount)‎ — روی جمع جدید (با تخفیف‌ها)
+    let debt: f64 = calcs
+        .iter()
+        .map(|c| (c.basis - c.paid_amount).max(0.0))
+        .sum();
     // جمع پرداخت‌های ثبت‌شده‌ی مشتری
     let total_paid: f64 = conn
         .query_row(
@@ -274,35 +392,6 @@ fn summary_for(conn: &Connection, customer_id: i64) -> Result<Summary, String> {
             |r| r.get(0),
         )
         .map_err(|e| e.to_string())?;
-    // بدهکاری = جمع «پرداخت‌نشده»‌ی فاکتورها، فاکتوربه‌فاکتور (منفی نمی‌شود):
-    // برای هر فاکتور: ‎max(0, (جمع فاکتور − آیتم‌های «مانده حساب قبلی») − paid_amount)‎
-    let debt: f64 = {
-        let mut stmt = conn
-            .prepare(
-                "SELECT i.paid_amount, \
-                        COALESCE(SUM(it.unit_price * it.qty), 0), \
-                        COALESCE(SUM(CASE WHEN it.name = ?2 THEN it.unit_price * it.qty ELSE 0 END), 0) \
-                 FROM invoices i LEFT JOIN invoice_items it ON it.invoice_id = i.id \
-                 WHERE i.customer_id = ?1 \
-                 GROUP BY i.id",
-            )
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map(params![customer_id, BALANCE_ITEM_NAME], |r| {
-                Ok((
-                    r.get::<_, f64>(0)?,
-                    r.get::<_, f64>(1)?,
-                    r.get::<_, f64>(2)?,
-                ))
-            })
-            .map_err(|e| e.to_string())?;
-        let mut d = 0.0;
-        for row in rows {
-            let (paid, total, balance) = row.map_err(|e| e.to_string())?;
-            d += ((total - balance) - paid).max(0.0);
-        }
-        d
-    };
     Ok(Summary {
         total_invoiced,
         total_paid,
@@ -316,7 +405,7 @@ fn summary_for(conn: &Connection, customer_id: i64) -> Result<Summary, String> {
 pub fn list_customers(state: State<'_, DbState>) -> Result<Vec<Customer>, String> {
     let conn = lock(&state)?;
     let mut stmt = conn
-        .prepare("SELECT id, name, phone, address FROM customers ORDER BY id")
+        .prepare("SELECT id, name, phone, address, credit_limit FROM customers ORDER BY id")
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |r| {
@@ -325,6 +414,7 @@ pub fn list_customers(state: State<'_, DbState>) -> Result<Vec<Customer>, String
                 name: r.get(1)?,
                 phone: r.get(2)?,
                 address: r.get(3)?,
+                credit_limit: r.get(4)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -332,17 +422,18 @@ pub fn list_customers(state: State<'_, DbState>) -> Result<Vec<Customer>, String
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub fn add_customer(
     state: State<'_, DbState>,
     name: String,
     phone: String,
     address: String,
+    credit_limit: f64,
 ) -> Result<Customer, String> {
     let conn = lock(&state)?;
     conn.execute(
-        "INSERT INTO customers (name, phone, address) VALUES (?1, ?2, ?3)",
-        params![name, phone, address],
+        "INSERT INTO customers (name, phone, address, credit_limit) VALUES (?1, ?2, ?3, ?4)",
+        params![name, phone, address, credit_limit],
     )
     .map_err(|e| e.to_string())?;
     let id = conn.last_insert_rowid();
@@ -351,21 +442,23 @@ pub fn add_customer(
         name,
         phone,
         address,
+        credit_limit,
     })
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub fn update_customer(
     state: State<'_, DbState>,
     id: i64,
     name: String,
     phone: String,
     address: String,
+    credit_limit: f64,
 ) -> Result<(), String> {
     let conn = lock(&state)?;
     conn.execute(
-        "UPDATE customers SET name = ?1, phone = ?2, address = ?3 WHERE id = ?4",
-        params![name, phone, address, id],
+        "UPDATE customers SET name = ?1, phone = ?2, address = ?3, credit_limit = ?4 WHERE id = ?5",
+        params![name, phone, address, credit_limit, id],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -385,7 +478,10 @@ pub fn delete_customer(state: State<'_, DbState>, id: i64) -> Result<(), String>
 pub fn list_products(state: State<'_, DbState>) -> Result<Vec<Product>, String> {
     let conn = lock(&state)?;
     let mut stmt = conn
-        .prepare("SELECT id, name, unit_price FROM products ORDER BY id")
+        .prepare(
+            "SELECT id, name, unit_price, unit, cost_price, stock, min_stock \
+             FROM products ORDER BY id",
+        )
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |r| {
@@ -393,6 +489,10 @@ pub fn list_products(state: State<'_, DbState>) -> Result<Vec<Product>, String> 
                 id: r.get(0)?,
                 name: r.get(1)?,
                 unit_price: r.get(2)?,
+                unit: r.get(3)?,
+                cost_price: r.get(4)?,
+                stock: r.get(5)?,
+                min_stock: r.get(6)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -405,11 +505,21 @@ pub fn add_product(
     state: State<'_, DbState>,
     name: String,
     unit_price: f64,
+    unit: String,
+    cost_price: f64,
+    stock: f64,
+    min_stock: f64,
 ) -> Result<Product, String> {
     let conn = lock(&state)?;
+    let unit = if unit.trim().is_empty() {
+        "عدد".to_string()
+    } else {
+        unit
+    };
     conn.execute(
-        "INSERT INTO products (name, unit_price) VALUES (?1, ?2)",
-        params![name, unit_price],
+        "INSERT INTO products (name, unit_price, unit, cost_price, stock, min_stock) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![name, unit_price, unit, cost_price, stock, min_stock],
     )
     .map_err(|e| e.to_string())?;
     let id = conn.last_insert_rowid();
@@ -417,20 +527,34 @@ pub fn add_product(
         id,
         name,
         unit_price,
+        unit,
+        cost_price,
+        stock,
+        min_stock,
     })
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub fn update_product(
     state: State<'_, DbState>,
     id: i64,
     name: String,
     unit_price: f64,
+    unit: String,
+    cost_price: f64,
+    stock: f64,
+    min_stock: f64,
 ) -> Result<(), String> {
     let conn = lock(&state)?;
+    let unit = if unit.trim().is_empty() {
+        "عدد".to_string()
+    } else {
+        unit
+    };
     conn.execute(
-        "UPDATE products SET name = ?1, unit_price = ?2 WHERE id = ?3",
-        params![name, unit_price, id],
+        "UPDATE products SET name = ?1, unit_price = ?2, unit = ?3, cost_price = ?4, \
+         stock = ?5, min_stock = ?6 WHERE id = ?7",
+        params![name, unit_price, unit, cost_price, stock, min_stock, id],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -446,6 +570,45 @@ pub fn delete_product(state: State<'_, DbState>, id: i64) -> Result<(), String> 
 
 // ---------- فاکتورها ----------
 
+/// تغییر موجودی محصولات بر اساس آیتم‌های فاکتور (تطبیق با نام محصول) —
+/// ردیف «مانده حساب قبلی» مستثناست و آیتم بدون محصول هم‌نام اثری ندارد.
+/// ‏sign=+1‎ برگرداندن به انبار (حذف یا قبل از ویرایش)، ‎sign=−1‎ کم‌کردن (ثبت/ویرایش تازه)
+fn adjust_stock(conn: &Connection, items: &[NewItem], sign: f64) -> Result<(), String> {
+    for it in items {
+        if it.name == BALANCE_ITEM_NAME {
+            continue;
+        }
+        conn.execute(
+            "UPDATE products SET stock = stock + ?1 WHERE name = ?2",
+            params![sign * it.qty, it.name],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// آیتم‌های فعلی یک فاکتور (برای برگرداندن موجودی در ویرایش/حذف)
+fn load_invoice_items(conn: &Connection, invoice_id: i64) -> Result<Vec<NewItem>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT name, unit_price, qty, discount_percent FROM invoice_items \
+             WHERE invoice_id = ?1 ORDER BY id",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![invoice_id], |r| {
+            Ok(NewItem {
+                name: r.get(0)?,
+                unit_price: r.get(1)?,
+                qty: r.get(2)?,
+                discount_percent: r.get(3)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command(rename_all = "camelCase")]
 pub fn list_invoices(
     state: State<'_, DbState>,
@@ -454,7 +617,7 @@ pub fn list_invoices(
     let conn = lock(&state)?;
     let mut stmt = conn
         .prepare(
-            "SELECT id, customer_id, invoice_number, date, paid_amount \
+            "SELECT id, customer_id, invoice_number, date, paid_amount, discount_amount, due_date \
              FROM invoices WHERE customer_id = ?1 ORDER BY invoice_number DESC",
         )
         .map_err(|e| e.to_string())?;
@@ -466,15 +629,19 @@ pub fn list_invoices(
                 r.get::<_, i64>(2)?,
                 r.get::<_, String>(3)?,
                 r.get::<_, f64>(4)?,
+                r.get::<_, f64>(5)?,
+                r.get::<_, String>(6)?,
             ))
         })
         .map_err(|e| e.to_string())?;
     let mut items_by_invoice = load_items_grouped(&conn, customer_id)?;
     let mut out = Vec::new();
     for inv in inv_rows {
-        let (id, cid, invoice_number, date, paid_amount) = inv.map_err(|e| e.to_string())?;
+        let (id, cid, invoice_number, date, paid_amount, discount_amount, due_date) =
+            inv.map_err(|e| e.to_string())?;
         let items = items_by_invoice.remove(&id).unwrap_or_default();
-        let total = items_total(&items);
+        let total = invoice_total_of(&items, discount_amount);
+        let basis = invoice_basis_of(&items, discount_amount);
         out.push(InvoiceView {
             id,
             customer_id: cid,
@@ -483,7 +650,9 @@ pub fn list_invoices(
             items,
             total,
             paid_amount,
-            status: status_of(total, paid_amount),
+            status: status_of(basis, paid_amount),
+            discount_amount,
+            due_date,
         });
     }
     Ok(out)
@@ -495,12 +664,17 @@ pub fn create_invoice(
     customer_id: i64,
     items: Vec<NewItem>,
     invoice_number: Option<i64>,
+    discount_amount: f64,
+    due_date: String,
 ) -> Result<InvoiceView, String> {
-    let conn = lock(&state)?;
+    let mut conn = lock(&state)?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("شروع تراکنش ثبت فاکتور ناموفق بود: {e}"))?;
     // شماره فاکتور: دستی (در صورت تکراری نبودن) یا خودکار max+1
     let number: i64 = match invoice_number {
         Some(n) => {
-            let exists: bool = conn
+            let exists: bool = tx
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM invoices WHERE invoice_number = ?1)",
                     params![n],
@@ -512,7 +686,7 @@ pub fn create_invoice(
             }
             n
         }
-        None => conn
+        None => tx
             .query_row(
                 "SELECT COALESCE(MAX(invoice_number), 0) + 1 FROM invoices",
                 [],
@@ -521,23 +695,29 @@ pub fn create_invoice(
             .map_err(|e| e.to_string())?,
     };
     let date = today_iso();
-    conn.execute(
-        "INSERT INTO invoices (customer_id, invoice_number, date, paid_amount) \
-         VALUES (?1, ?2, ?3, 0)",
-        params![customer_id, number, date],
+    tx.execute(
+        "INSERT INTO invoices (customer_id, invoice_number, date, paid_amount, discount_amount, due_date) \
+         VALUES (?1, ?2, ?3, 0, ?4, ?5)",
+        params![customer_id, number, date, discount_amount, due_date],
     )
     .map_err(|e| e.to_string())?;
-    let id = conn.last_insert_rowid();
-    insert_items(&conn, id, &items)?;
+    let id = tx.last_insert_rowid();
+    insert_items(&tx, id, &items)?;
+    // کم‌کردن موجودی محصولات همین فاکتور (داخل همان تراکنش)
+    adjust_stock(&tx, &items, -1.0)?;
+    tx.commit()
+        .map_err(|e| format!("ثبت نهایی فاکتور ناموفق بود: {e}"))?;
     let view_items: Vec<ItemView> = items
         .into_iter()
         .map(|i| ItemView {
             name: i.name,
             unit_price: i.unit_price,
             qty: i.qty,
+            discount_percent: i.discount_percent,
         })
         .collect();
-    let total = items_total(&view_items);
+    let total = invoice_total_of(&view_items, discount_amount);
+    let basis = invoice_basis_of(&view_items, discount_amount);
     Ok(InvoiceView {
         id,
         customer_id,
@@ -546,30 +726,56 @@ pub fn create_invoice(
         items: view_items,
         total,
         paid_amount: 0.0,
-        status: status_of(total, 0.0),
+        status: status_of(basis, 0.0),
+        discount_amount,
+        due_date,
     })
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub fn update_invoice(
     state: State<'_, DbState>,
     id: i64,
     items: Vec<NewItem>,
+    discount_amount: f64,
+    due_date: String,
 ) -> Result<(), String> {
-    let conn = lock(&state)?;
-    conn.execute("DELETE FROM invoice_items WHERE invoice_id = ?1", params![id])
+    let mut conn = lock(&state)?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("شروع تراکنش ویرایش فاکتور ناموفق بود: {e}"))?;
+    // ویرایش = برگرداندن موجودی آیتم‌های قبلی + اعمال آیتم‌های تازه (تراکنشی)
+    let old_items = load_invoice_items(&tx, id)?;
+    adjust_stock(&tx, &old_items, 1.0)?;
+    tx.execute("DELETE FROM invoice_items WHERE invoice_id = ?1", params![id])
         .map_err(|e| e.to_string())?;
-    insert_items(&conn, id, &items)?;
+    insert_items(&tx, id, &items)?;
+    adjust_stock(&tx, &items, -1.0)?;
+    tx.execute(
+        "UPDATE invoices SET discount_amount = ?1, due_date = ?2 WHERE id = ?3",
+        params![discount_amount, due_date, id],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.commit()
+        .map_err(|e| format!("ثبت نهایی ویرایش فاکتور ناموفق بود: {e}"))?;
     Ok(())
 }
 
 #[tauri::command]
 pub fn delete_invoice(state: State<'_, DbState>, id: i64) -> Result<(), String> {
-    let conn = lock(&state)?;
-    conn.execute("DELETE FROM invoice_items WHERE invoice_id = ?1", params![id])
+    let mut conn = lock(&state)?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("شروع تراکنش حذف فاکتور ناموفق بود: {e}"))?;
+    // برگرداندن موجودی آیتم‌های فاکتور حذف‌شده
+    let old_items = load_invoice_items(&tx, id)?;
+    adjust_stock(&tx, &old_items, 1.0)?;
+    tx.execute("DELETE FROM invoice_items WHERE invoice_id = ?1", params![id])
         .map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM invoices WHERE id = ?1", params![id])
+    tx.execute("DELETE FROM invoices WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
+    tx.commit()
+        .map_err(|e| format!("ثبت نهایی حذف فاکتور ناموفق بود: {e}"))?;
     Ok(())
 }
 
@@ -581,45 +787,40 @@ pub fn record_payment(
     customer_id: i64,
     amount: f64,
     note: String,
+    method: String,
 ) -> Result<Summary, String> {
+    // روش پرداخت: نقد/کارتخوان/چک/نسیه — خالی یعنی پیش‌فرض «نقد»
+    let method = if method.trim().is_empty() {
+        "نقد".to_string()
+    } else if ["نقد", "کارتخوان", "چک", "نسیه"].contains(&method.as_str()) {
+        method
+    } else {
+        return Err("روش پرداخت نامعتبر است.".to_string());
+    };
     let conn = lock(&state)?;
     let date = today_iso();
     conn.execute(
-        "INSERT INTO payments (customer_id, amount, date, note) VALUES (?1, ?2, ?3, ?4)",
-        params![customer_id, amount, date, note],
+        "INSERT INTO payments (customer_id, amount, date, note, method) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![customer_id, amount, date, note, method],
     )
     .map_err(|e| e.to_string())?;
 
-    // تخصیص مبلغ به قدیمی‌ترین فاکتورهای پرداخت‌نشده
-    let mut stmt = conn
-        .prepare(
-            "SELECT i.id, COALESCE(SUM(it.unit_price * it.qty), 0), i.paid_amount \
-             FROM invoices i LEFT JOIN invoice_items it ON it.invoice_id = i.id \
-             WHERE i.customer_id = ?1 \
-             GROUP BY i.id \
-             HAVING COALESCE(SUM(it.unit_price * it.qty), 0) > i.paid_amount \
-             ORDER BY i.date ASC, i.id ASC",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map(params![customer_id], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, f64>(1)?,
-                r.get::<_, f64>(2)?,
-            ))
-        })
-        .map_err(|e| e.to_string())?;
+    // تخصیص مبلغ به قدیمی‌ترین فاکتورهای پرداخت‌نشده — بر مبنای بدهی هر فاکتور
+    // (جمع جدید با تخفیف‌ها، بدون «مانده حساب قبلی») دقیقاً مثل فرمول خلاصه حساب
+    let calcs = invoice_calcs(&conn, customer_id)?;
     let mut remaining = amount;
-    for row in rows {
-        let (inv_id, total, paid) = row.map_err(|e| e.to_string())?;
+    for c in &calcs {
         if remaining <= 0.0 {
             break;
         }
-        let apply = (total - paid).min(remaining);
+        let owed = c.basis - c.paid_amount;
+        if owed <= 0.0 {
+            continue;
+        }
+        let apply = owed.min(remaining);
         conn.execute(
             "UPDATE invoices SET paid_amount = paid_amount + ?1 WHERE id = ?2",
-            params![apply, inv_id],
+            params![apply, c.id],
         )
         .map_err(|e| e.to_string())?;
         remaining -= apply;
@@ -635,6 +836,272 @@ pub fn customer_summary(
 ) -> Result<Summary, String> {
     let conn = lock(&state)?;
     summary_for(&conn, customer_id)
+}
+
+// ---------- گزارش‌ها ----------
+
+/// فروش یک روز: جمع فروش (بدون «مانده حساب قبلی»، با تخفیف‌ها) + تعداد فاکتور
+#[derive(Debug, Clone, Serialize)]
+pub struct SalesDay {
+    pub date: String,
+    pub total: f64,
+    pub count: i64,
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn report_sales(
+    state: State<'_, DbState>,
+    from: String,
+    to: String,
+) -> Result<Vec<SalesDay>, String> {
+    let conn = lock(&state)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT i.date, i.discount_amount, \
+                    COALESCE(SUM(CASE WHEN it.name = ?3 THEN 0 \
+                                      ELSE it.unit_price * it.qty * (1 - it.discount_percent / 100.0) END), 0) \
+             FROM invoices i LEFT JOIN invoice_items it ON it.invoice_id = i.id \
+             WHERE i.date >= ?1 AND i.date <= ?2 \
+             GROUP BY i.id ORDER BY i.date ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![from, to, BALANCE_ITEM_NAME], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, f64>(1)?,
+                r.get::<_, f64>(2)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut days: std::collections::BTreeMap<String, (f64, i64)> =
+        std::collections::BTreeMap::new();
+    for row in rows {
+        let (date, discount, net_sales) = row.map_err(|e| e.to_string())?;
+        let e = days.entry(date).or_insert((0.0, 0));
+        e.0 += net_sales - discount;
+        e.1 += 1;
+    }
+    Ok(days
+        .into_iter()
+        .map(|(date, (total, count))| SalesDay { date, total, count })
+        .collect())
+}
+
+/// محصول پرفروش: تعداد و مبلغ خالص (بعد از تخفیف سطری) + سود با قیمت خرید فعلی محصول
+#[derive(Debug, Clone, Serialize)]
+pub struct TopProduct {
+    pub name: String,
+    pub qty: f64,
+    pub amount: f64,
+    pub profit: f64,
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn report_top_products(
+    state: State<'_, DbState>,
+    from: String,
+    to: String,
+    limit: i64,
+) -> Result<Vec<TopProduct>, String> {
+    let conn = lock(&state)?;
+    // قیمت خرید هر محصول (تطبیق با نام؛ نبود محصول = ۰)
+    let mut cost_map: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+    {
+        let mut stmt = conn
+            .prepare("SELECT name, cost_price FROM products")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)))
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            let (n, c) = row.map_err(|e| e.to_string())?;
+            cost_map.insert(n, c);
+        }
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT it.name, it.unit_price, it.qty, it.discount_percent \
+             FROM invoice_items it JOIN invoices i ON i.id = it.invoice_id \
+             WHERE i.date >= ?1 AND i.date <= ?2 AND it.name != ?3",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![from, to, BALANCE_ITEM_NAME], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, f64>(1)?,
+                r.get::<_, f64>(2)?,
+                r.get::<_, f64>(3)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    // name → (qty, amount, profit)
+    let mut agg: std::collections::HashMap<String, (f64, f64, f64)> =
+        std::collections::HashMap::new();
+    for row in rows {
+        let (name, price, qty, disc) = row.map_err(|e| e.to_string())?;
+        let net = price * qty * (1.0 - disc / 100.0);
+        let cost = cost_map.get(&name).copied().unwrap_or(0.0) * qty;
+        let e = agg.entry(name).or_insert((0.0, 0.0, 0.0));
+        e.0 += qty;
+        e.1 += net;
+        e.2 += net - cost;
+    }
+    let mut out: Vec<TopProduct> = agg
+        .into_iter()
+        .map(|(name, (qty, amount, profit))| TopProduct {
+            name,
+            qty,
+            amount,
+            profit,
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        b.amount
+            .partial_cmp(&a.amount)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.qty.partial_cmp(&a.qty).unwrap_or(std::cmp::Ordering::Equal))
+    });
+    if limit > 0 {
+        out.truncate(limit as usize);
+    }
+    Ok(out)
+}
+
+/// بدهکار: جمع بدهی + تاریخ قدیمی‌ترین فاکتور پرداخت‌نشده (برای قدمت بدهی)
+#[derive(Debug, Clone, Serialize)]
+pub struct DebtorRow {
+    pub customer_id: i64,
+    pub name: String,
+    pub debt: f64,
+    pub oldest_unpaid_date: String,
+}
+
+#[tauri::command]
+pub fn report_debtors(state: State<'_, DbState>) -> Result<Vec<DebtorRow>, String> {
+    let conn = lock(&state)?;
+    let customers: Vec<(i64, String)> = {
+        let mut stmt = conn
+            .prepare("SELECT id, name FROM customers ORDER BY id")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| e.to_string())?
+    };
+    let mut out = Vec::new();
+    for (cid, name) in customers {
+        let calcs = invoice_calcs(&conn, cid)?;
+        let mut debt = 0.0;
+        let mut oldest: Option<String> = None;
+        for c in &calcs {
+            let owed = c.basis - c.paid_amount;
+            if owed > 0.0 {
+                debt += owed;
+                if oldest.is_none() {
+                    oldest = Some(c.date.clone());
+                }
+            }
+        }
+        if debt > 0.0 {
+            out.push(DebtorRow {
+                customer_id: cid,
+                name,
+                debt,
+                oldest_unpaid_date: oldest.unwrap_or_default(),
+            });
+        }
+    }
+    out.sort_by(|a, b| {
+        b.debt
+            .partial_cmp(&a.debt)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    Ok(out)
+}
+
+/// ردیف صورت‌حساب مشتری: گردش زمانی فاکتورها (بدهکار) و پرداخت‌ها (بستانکار) با مانده‌ی جاری
+#[derive(Debug, Clone, Serialize)]
+pub struct StatementRow {
+    pub date: String,
+    pub kind: String, // "invoice" | "payment"
+    pub description: String,
+    pub debit: f64,
+    pub credit: f64,
+    pub balance: f64,
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn customer_statement(
+    state: State<'_, DbState>,
+    customer_id: i64,
+) -> Result<Vec<StatementRow>, String> {
+    let conn = lock(&state)?;
+    // رویدادها: (تاریخ، ترتیب هم‌روز، ردیف بدون مانده) — فاکتور قبل از پرداخت همان روز
+    let mut events: Vec<(String, u8, StatementRow)> = Vec::new();
+    for c in invoice_calcs(&conn, customer_id)? {
+        events.push((
+            c.date.clone(),
+            0,
+            StatementRow {
+                date: c.date.clone(),
+                kind: "invoice".to_string(),
+                description: format!("فاکتور شماره {}", c.invoice_number),
+                debit: c.basis,
+                credit: 0.0,
+                balance: 0.0,
+            },
+        ));
+    }
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT date, amount, note, method FROM payments \
+                 WHERE customer_id = ?1 ORDER BY date ASC, id ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![customer_id], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, f64>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            let (date, amount, note, method) = row.map_err(|e| e.to_string())?;
+            let description = if note.trim().is_empty() {
+                format!("پرداخت ({method})")
+            } else {
+                note
+            };
+            events.push((
+                date.clone(),
+                1,
+                StatementRow {
+                    date,
+                    kind: "payment".to_string(),
+                    description,
+                    debit: 0.0,
+                    credit: amount,
+                    balance: 0.0,
+                },
+            ));
+        }
+    }
+    events.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    let mut balance = 0.0;
+    let mut out = Vec::with_capacity(events.len());
+    for (_, _, mut row) in events {
+        balance += row.debit - row.credit;
+        row.balance = balance;
+        out.push(row);
+    }
+    Ok(out)
 }
 
 // ---------- اطلاعات قناد ----------

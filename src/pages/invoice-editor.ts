@@ -1,6 +1,6 @@
 // شیرین حساب — ویرایشگر فاکتور (ثبت جدید / ویرایش) + خروجی PDF
 import { api, type Customer, type Invoice, type InvoiceItem, type Product } from "../lib/api";
-import { fmtMoney, toJalali, todayIso } from "../lib/jalali";
+import { fmtMoney, parseJalaliInput, toJalali, todayIso } from "../lib/jalali";
 import { navigate } from "../lib/router";
 import { exportInvoicePdf } from "../lib/pdf";
 
@@ -10,7 +10,10 @@ interface Row {
   productId: number | null;
   name: string;
   unitPrice: number;
-  qty: number;
+  qty: number;          // می‌تواند اعشاری باشد (فروش وزنی)
+  discountPct: number;  // تخفیف درصدی ردیف (۰ تا ۱۰۰)
+  unit: string;         // واحد محصول (نمایشی)
+  stock: number | null; // موجودی محصول (برای هشدار نرم)؛ null = نامشخص
 }
 
 const faNum = (n: number): string => n.toLocaleString("fa-IR", { useGrouping: false });
@@ -23,10 +26,13 @@ function safeJalali(iso: string): string {
   }
 }
 
+const clampPct = (n: number): number => (Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : 0);
+
+/** جمع خالص یک ردیف بعد از تخفیف درصدی خودش */
 function rowTotal(r: Row): number {
   const q = Number.isFinite(r.qty) ? Math.max(0, r.qty) : 0;
   const u = Number.isFinite(r.unitPrice) ? Math.max(0, r.unitPrice) : 0;
-  return Math.round(q * u);
+  return Math.round(q * u * (1 - clampPct(r.discountPct) / 100));
 }
 
 function escapeHtml(s: string): string {
@@ -62,6 +68,15 @@ async function initEditor(root: HTMLElement, customer: Customer, invoice?: Invoi
     productsError = "لیست محصولات بارگذاری نشد؛ فقط «آیتم دستی» در دسترس است.";
   }
 
+  // بدهی فعلی مشتری — هم برای ردیف خودکار «مانده حساب قبلی» (حالت جدید)
+  // و هم برای هشدار نرم سقف اعتبار لازم است.
+  let baseDebt = 0;
+  try {
+    baseDebt = (await api.customerSummary(customer.id)).debt;
+  } catch {
+    baseDebt = 0;
+  }
+
   const rows: Row[] = [];
   let seq = 1;
   const addRow = (r: Omit<Row, "key">): void => {
@@ -69,20 +84,13 @@ async function initEditor(root: HTMLElement, customer: Customer, invoice?: Invoi
   };
 
   const BALANCE_ROW_NAME = "مانده حساب قبلی";
+  const isBalanceRow = (name: string): boolean => name.trim() === BALANCE_ROW_NAME;
 
   // فقط در حالت «فاکتور جدید»: ردیف خودکار «مانده حساب قبلی» با مبلغ بدهکاری فعلی مشتری
   // (اگر صفر یا منفی بود، ردیفی اضافه نمی‌شود). در حالت ویرایش، ردیف ذخیره‌شده
   // دست‌نخورده از آیتم‌های فاکتور پر می‌شود — بدون بازنویسی و بدون محاسبه‌ی مجدد.
-  if (!invoice) {
-    let debt = 0;
-    try {
-      debt = (await api.customerSummary(customer.id)).debt;
-    } catch {
-      debt = 0;
-    }
-    if (debt > 0) {
-      addRow({ manual: true, productId: null, name: BALANCE_ROW_NAME, unitPrice: debt, qty: 1 });
-    }
+  if (!invoice && baseDebt > 0) {
+    addRow({ manual: true, productId: null, name: BALANCE_ROW_NAME, unitPrice: baseDebt, qty: 1, discountPct: 0, unit: "", stock: null });
   }
 
   // حالت ویرایش: آیتم‌های فاکتور از قبل پر باشند (از جمله ردیف «مانده حساب قبلی» ذخیره‌شده)
@@ -91,9 +99,17 @@ async function initEditor(root: HTMLElement, customer: Customer, invoice?: Invoi
     for (const it of invoice.items) {
       const match = products.find((p) => p.name === it.name && p.unit_price === it.unit_price);
       if (match) {
-        addRow({ manual: false, productId: match.id, name: match.name, unitPrice: match.unit_price, qty: it.qty });
+        addRow({
+          manual: false, productId: match.id, name: match.name, unitPrice: match.unit_price,
+          qty: it.qty, discountPct: isBalanceRow(it.name) ? 0 : (it.discount_pct ?? 0),
+          unit: match.unit ?? "", stock: typeof match.stock === "number" ? match.stock : null,
+        });
       } else {
-        addRow({ manual: true, productId: null, name: it.name, unitPrice: it.unit_price, qty: it.qty });
+        addRow({
+          manual: true, productId: null, name: it.name, unitPrice: it.unit_price,
+          qty: it.qty, discountPct: isBalanceRow(it.name) ? 0 : (it.discount_pct ?? 0),
+          unit: "", stock: null,
+        });
       }
     }
   }
@@ -101,6 +117,8 @@ async function initEditor(root: HTMLElement, customer: Customer, invoice?: Invoi
   const isEdit = !!invoice;
   const numberLabel = invoice ? faNum(invoice.invoice_number) : "خودکار";
   const dateLabel = invoice ? safeJalali(invoice.date) : toJalali(todayIso());
+  const initDiscount = invoice?.discount_amount && invoice.discount_amount > 0 ? String(invoice.discount_amount) : "";
+  const initDue = invoice?.due_date ? safeJalali(invoice.due_date) : "";
 
   root.innerHTML = `
   <style>
@@ -108,8 +126,15 @@ async function initEditor(root: HTMLElement, customer: Customer, invoice?: Invoi
     .inv-meta .lbl { color:var(--muted); font-size:13px; margin-inline-end:6px; }
     .inv-meta input[readonly] { background:#f7f1e6; border-style:dashed; min-width:190px; }
     .inv-tools { display:flex; gap:10px; align-items:center; margin:16px 0 6px; flex-wrap:wrap; }
+    .inv-opts { display:flex; gap:12px 28px; align-items:center; margin:8px 0 2px; flex-wrap:wrap; }
+    .inv-opts .lbl { color:var(--muted); font-size:13px; margin-inline-end:6px; }
+    .inv-opts input { width:150px; text-align:center; }
+    #dueDate { width:130px; }
+    .sub-total { color:var(--muted); font-size:14px; }
+    .sub-total b { color:var(--ink); }
     .grand { margin-inline-start:auto; font-size:17px; background:#f7f1e6; border:1px solid #f0e4d2; padding:8px 16px; border-radius:10px; }
     .grand b { color:var(--accent-dark); }
+    .warn-box { margin-top:12px; background:#fdf6e0; border:1px solid #ecd9ae; color:#7a5b12; border-radius:10px; padding:10px 14px; font-size:14px; line-height:2; }
     .inv-actions { display:flex; gap:10px; margin-top:18px; flex-wrap:wrap; }
     .inv-actions .btn { min-width:140px; padding:11px 20px; }
     .err { color:var(--danger); min-height:22px; margin:8px 0 0; }
@@ -120,8 +145,10 @@ async function initEditor(root: HTMLElement, customer: Customer, invoice?: Invoi
     input:focus, select:focus { outline:2px solid #ecd9ae; border-color:var(--accent); }
     .p-sum { font-weight:700; white-space:nowrap; }
     select.p-sel, input.m-name { width:100%; }
-    input.p-qty, input.m-qty { width:90px; text-align:center; }
-    input.m-unit { width:160px; }
+    input.p-qty, input.m-qty { width:78px; text-align:center; }
+    input.r-disc { width:70px; text-align:center; }
+    input.m-unit { width:150px; }
+    .r-unit { color:var(--muted); font-size:12px; margin-inline-start:5px; white-space:nowrap; }
     #invNumber { width:110px; text-align:center; }
   </style>
   <div class="card">
@@ -134,17 +161,24 @@ async function initEditor(root: HTMLElement, customer: Customer, invoice?: Invoi
     ${productsError ? `<p class="err">${escapeHtml(productsError)}</p>` : ""}
     <table>
       <thead><tr>
-        <th class="c" style="width:56px">ردیف</th><th>کالا / شرح</th>
-        <th class="c" style="width:110px">تعداد</th><th class="c" style="width:200px">قیمت واحد (ریال)</th>
-        <th class="c" style="width:200px">جمع (ریال)</th><th class="c" style="width:90px">عملیات</th>
+        <th class="c" style="width:52px">ردیف</th><th>کالا / شرح</th>
+        <th class="c" style="width:130px">تعداد</th><th class="c" style="width:92px">تخفیف ٪</th>
+        <th class="c" style="width:190px">قیمت واحد (ریال)</th>
+        <th class="c" style="width:190px">جمع (ریال)</th><th class="c" style="width:84px">عملیات</th>
       </tr></thead>
       <tbody id="invRows"></tbody>
     </table>
     <div class="inv-tools">
       <button class="btn ghost" id="addProduct">+ افزودن کالا از لیست</button>
       <button class="btn ghost" id="addManual">+ آیتم دستی</button>
-      <span class="grand">جمع کل فاکتور: <b id="grandTotal">${fmtMoney(0)}</b></span>
+      <span class="grand">مبلغ نهایی فاکتور: <b id="grandTotal">${fmtMoney(0)}</b></span>
     </div>
+    <div class="inv-opts">
+      <div><span class="lbl">تخفیف کلی فاکتور (ریال):</span><input id="invDiscount" inputmode="numeric" placeholder="۰" value="${escapeHtml(initDiscount)}"></div>
+      <div><span class="lbl">تاریخ سررسید:</span><input id="dueDate" placeholder="۱۴۰۴/۰۹/۰۱" value="${escapeHtml(initDue)}"></div>
+      <span class="sub-total">جمع ردیف‌ها: <b id="subTotal">${fmtMoney(0)}</b></span>
+    </div>
+    <div id="warnBox" class="warn-box" hidden></div>
     <div class="inv-actions">
       <button class="btn" id="saveBtn">${isEdit ? "ذخیره تغییرات" : "ثبت فاکتور"}</button>
       <button class="btn ghost" id="pdfBtn">خروجی PDF</button>
@@ -155,13 +189,17 @@ async function initEditor(root: HTMLElement, customer: Customer, invoice?: Invoi
 
   const tbody = root.querySelector<HTMLTableSectionElement>("#invRows")!;
   const grandEl = root.querySelector<HTMLElement>("#grandTotal")!;
+  const subEl = root.querySelector<HTMLElement>("#subTotal")!;
   const errEl = root.querySelector<HTMLElement>("#formErr")!;
+  const warnBox = root.querySelector<HTMLElement>("#warnBox")!;
+  const discountInput = root.querySelector<HTMLInputElement>("#invDiscount")!;
+  const dueInput = root.querySelector<HTMLInputElement>("#dueDate")!;
 
   const productOptions = (selectedId: number | null): string => {
     const opts = products
       .map(
         (p) =>
-          `<option value="${p.id}"${p.id === selectedId ? " selected" : ""}>${escapeHtml(p.name)} — ${faNum(
+          `<option value="${p.id}"${p.id === selectedId ? " selected" : ""}>${escapeHtml(p.name)}${p.unit ? ` (${escapeHtml(p.unit)})` : ""} — ${faNum(
             p.unit_price
           )} ریال</option>`
       )
@@ -172,11 +210,16 @@ async function initEditor(root: HTMLElement, customer: Customer, invoice?: Invoi
   function rowHtml(r: Row, i: number): string {
     const num = faNum(i + 1);
     const del = `<button class="btn danger p-del" data-key="${r.key}" style="padding:6px 12px">حذف</button>`;
+    const balance = isBalanceRow(r.name);
+    const discCell = balance
+      ? `<span style="color:var(--muted)">—</span>`
+      : `<input type="number" class="r-disc" data-key="${r.key}" min="0" max="100" step="any" value="${r.discountPct || ""}" placeholder="۰">`;
     if (r.manual) {
       return `<tr data-key="${r.key}">
         <td class="c">${num}</td>
         <td><input class="m-name" data-key="${r.key}" placeholder="نام کالا یا خدمت" value="${escapeHtml(r.name)}"></td>
-        <td class="c"><input type="number" class="m-qty" data-key="${r.key}" min="1" value="${r.qty}"></td>
+        <td class="c"><input type="number" class="m-qty" data-key="${r.key}" min="0" step="any" value="${r.qty}"></td>
+        <td class="c">${discCell}</td>
         <td class="c"><input type="number" class="m-unit" data-key="${r.key}" min="0" value="${r.unitPrice}" placeholder="قیمت واحد"></td>
         <td class="c"><span class="p-sum" data-sum="${r.key}">${fmtMoney(rowTotal(r))}</span></td>
         <td class="c">${del}</td></tr>`;
@@ -184,14 +227,53 @@ async function initEditor(root: HTMLElement, customer: Customer, invoice?: Invoi
     return `<tr data-key="${r.key}">
       <td class="c">${num}</td>
       <td><select class="p-sel" data-key="${r.key}">${productOptions(r.productId)}</select></td>
-      <td class="c"><input type="number" class="p-qty" data-key="${r.key}" min="1" value="${r.qty}"></td>
+      <td class="c"><input type="number" class="p-qty" data-key="${r.key}" min="0" step="any" value="${r.qty}"><span class="r-unit" data-unitlabel="${r.key}">${escapeHtml(r.unit)}</span></td>
+      <td class="c">${discCell}</td>
       <td class="c"><span class="p-unit" data-unit="${r.key}">${r.productId ? faNum(r.unitPrice) + " ریال" : "—"}</span></td>
       <td class="c"><span class="p-sum" data-sum="${r.key}">${fmtMoney(rowTotal(r))}</span></td>
       <td class="c">${del}</td></tr>`;
   }
 
+  const invoiceDiscount = (): number => {
+    const v = Number(toLatinDigits(discountInput.value.trim()).replace(/,/g, ""));
+    return Number.isFinite(v) && v > 0 ? Math.round(v) : 0;
+  };
+
+  /** سهم خالص یک فاکتور از بدهی = جمعش منهای ردیف‌های «مانده حساب قبلی» (جلوگیری از شمارش مضاعف) */
+  const carryNet = (items: Array<{ name: string; unit_price: number; qty: number; discount_pct?: number }>): number =>
+    items
+      .filter((it) => isBalanceRow(it.name))
+      .reduce((s, it) => s + Math.round(it.qty * it.unit_price * (1 - clampPct(it.discount_pct ?? 0) / 100)), 0);
+
+  function computeWarnings(finalTotal: number): string[] {
+    const warns: string[] = [];
+    // موجودی ناکافی (هشدار نرم — ذخیره را متوقف نمی‌کند)
+    for (const r of rows) {
+      if (!r.manual && r.stock !== null && r.qty > r.stock) {
+        warns.push(`موجودی کافی نیست: «${escapeHtml(r.name)}» — موجودی ${faNum(r.stock)}${r.unit ? " " + escapeHtml(r.unit) : ""}، مقدار فاکتور ${faNum(r.qty)}.`);
+      }
+    }
+    // سقف اعتبار (هشدار نرم)
+    const limit = customer.credit_limit ?? 0;
+    if (limit > 0) {
+      const oldEffect = invoice ? invoice.total - carryNet(invoice.items) : 0;
+      const newEffect = finalTotal - carryNet(rows.map((r) => ({ name: r.name, unit_price: r.unitPrice, qty: r.qty, discount_pct: r.discountPct })));
+      const projected = baseDebt - oldEffect + newEffect;
+      if (projected > limit) {
+        warns.push(`از سقف اعتبار گذشت: بدهی مشتری بعد از این فاکتور ${fmtMoney(projected)} می‌شود و سقف اعتبار او ${fmtMoney(limit)} است.`);
+      }
+    }
+    return warns;
+  }
+
   function updateTotals(): void {
-    grandEl.textContent = fmtMoney(rows.reduce((s, r) => s + rowTotal(r), 0));
+    const subtotal = rows.reduce((s, r) => s + rowTotal(r), 0);
+    const finalTotal = Math.max(0, subtotal - invoiceDiscount());
+    subEl.textContent = fmtMoney(subtotal);
+    grandEl.textContent = fmtMoney(finalTotal);
+    const warns = computeWarnings(finalTotal);
+    warnBox.innerHTML = warns.map((w) => `<div>⚠ ${w}</div>`).join("");
+    warnBox.hidden = warns.length === 0;
   }
 
   function refreshRow(row: Row): void {
@@ -203,7 +285,7 @@ async function initEditor(root: HTMLElement, customer: Customer, invoice?: Invoi
   function renderRows(): void {
     tbody.innerHTML = rows.length
       ? rows.map((r, i) => rowHtml(r, i)).join("")
-      : `<tr><td colspan="6" class="c" style="color:var(--muted);padding:22px">ردیفی ثبت نشده است — از دکمه‌های زیر جدول استفاده کنید.</td></tr>`;
+      : `<tr><td colspan="7" class="c" style="color:var(--muted);padding:22px">ردیفی ثبت نشده است — از دکمه‌های زیر جدول استفاده کنید.</td></tr>`;
     updateTotals();
   }
 
@@ -217,13 +299,19 @@ async function initEditor(root: HTMLElement, customer: Customer, invoice?: Invoi
       row.productId = p.id;
       row.name = p.name;
       row.unitPrice = p.unit_price;
+      row.unit = p.unit ?? "";
+      row.stock = typeof p.stock === "number" ? p.stock : null;
     } else {
       row.productId = null;
       row.name = "";
       row.unitPrice = 0;
+      row.unit = "";
+      row.stock = null;
     }
     const unitEl = tbody.querySelector(`[data-unit="${key}"]`);
     if (unitEl) unitEl.textContent = row.productId ? faNum(row.unitPrice) + " ریال" : "—";
+    const unitLabel = tbody.querySelector(`[data-unitlabel="${key}"]`);
+    if (unitLabel) unitLabel.textContent = row.unit;
     refreshRow(row);
   });
 
@@ -233,11 +321,13 @@ async function initEditor(root: HTMLElement, customer: Customer, invoice?: Invoi
     const row = rows.find((r) => r.key === key);
     if (!row) return;
     if (t.classList.contains("p-qty") || t.classList.contains("m-qty")) {
-      row.qty = Math.max(0, Math.floor(Number(t.value) || 0));
+      row.qty = Math.max(0, Number(t.value) || 0); // اعشاری مجاز است (فروش وزنی)
     } else if (t.classList.contains("m-unit")) {
       row.unitPrice = Math.max(0, Number(t.value) || 0);
     } else if (t.classList.contains("m-name")) {
       row.name = t.value;
+    } else if (t.classList.contains("r-disc")) {
+      row.discountPct = clampPct(Number(t.value) || 0);
     }
     refreshRow(row);
   });
@@ -252,19 +342,34 @@ async function initEditor(root: HTMLElement, customer: Customer, invoice?: Invoi
     }
   });
 
+  discountInput.addEventListener("input", updateTotals);
+
   root.querySelector("#addProduct")!.addEventListener("click", () => {
-    addRow({ manual: false, productId: null, name: "", unitPrice: 0, qty: 1 });
+    addRow({ manual: false, productId: null, name: "", unitPrice: 0, qty: 1, discountPct: 0, unit: "", stock: null });
     renderRows();
   });
   root.querySelector("#addManual")!.addEventListener("click", () => {
-    addRow({ manual: true, productId: null, name: "", unitPrice: 0, qty: 1 });
+    addRow({ manual: true, productId: null, name: "", unitPrice: 0, qty: 1, discountPct: 0, unit: "", stock: null });
     renderRows();
   });
 
   const collectItems = (): InvoiceItem[] =>
     rows
       .filter((r) => r.qty > 0 && r.name.trim() !== "")
-      .map((r) => ({ name: r.name.trim(), unit_price: Math.max(0, Math.round(r.unitPrice)), qty: r.qty }));
+      .map((r) => ({
+        name: r.name.trim(),
+        unit_price: Math.max(0, Math.round(r.unitPrice)),
+        qty: r.qty,
+        discount_pct: isBalanceRow(r.name) ? 0 : clampPct(r.discountPct),
+      }));
+
+  /** سررسید واردشده را به ISO برمی‌گرداند؛ رشته‌ی خالی = بدون سررسید، مقدار نامعتبر = null دوم */
+  const readDueDate = (): { iso: string | null; valid: boolean } => {
+    const text = dueInput.value.trim();
+    if (!text) return { iso: null, valid: true };
+    const iso = parseJalaliInput(text);
+    return iso ? { iso, valid: true } : { iso: null, valid: false };
+  };
 
   const saveBtn = root.querySelector<HTMLButtonElement>("#saveBtn")!;
   saveBtn.addEventListener("click", async () => {
@@ -272,6 +377,11 @@ async function initEditor(root: HTMLElement, customer: Customer, invoice?: Invoi
     const items = collectItems();
     if (!items.length) {
       errEl.textContent = "حداقل یک ردیف معتبر (نام + تعداد بیشتر از صفر) وارد کنید.";
+      return;
+    }
+    const due = readDueDate();
+    if (!due.valid) {
+      errEl.textContent = "تاریخ سررسید معتبر نیست؛ مثال: ۱۴۰۴/۰۹/۰۱ (یا خالی بگذارید).";
       return;
     }
     // شماره فاکتور: خالی = خودکار (بک‌اند max+1 می‌دهد)، وگرنه عدد واردشده
@@ -288,10 +398,11 @@ async function initEditor(root: HTMLElement, customer: Customer, invoice?: Invoi
         invoiceNumber = n;
       }
     }
+    const opts = { discountAmount: invoiceDiscount(), dueDate: due.iso };
     saveBtn.disabled = true;
     try {
-      if (invoice) await api.updateInvoice(invoice.id, items);
-      else await api.createInvoice(customer.id, items, invoiceNumber);
+      if (invoice) await api.updateInvoice(invoice.id, items, opts);
+      else await api.createInvoice(customer.id, items, invoiceNumber, opts);
       navigate("customer-invoices", customer);
     } catch (e) {
       const msg = String((e as Error)?.message || e);
@@ -322,12 +433,16 @@ async function initEditor(root: HTMLElement, customer: Customer, invoice?: Invoi
       const raw = numInput ? toLatinDigits(numInput.value.trim()) : "";
       const n = Math.floor(Number(raw));
       const hasNum = raw !== "" && Number.isFinite(n) && n > 0;
+      const due = readDueDate();
       await exportInvoicePdf({
         invoiceNumber: invoice ? faNum(invoice.invoice_number) : hasNum ? faNum(n) : "خودکار",
         fileNumber: invoice ? String(invoice.invoice_number) : hasNum ? String(n) : "new",
         dateJalali: dateLabel,
         customerName: customer.name,
         items,
+        paidAmount: invoice ? invoice.paid_amount : 0,
+        discountAmount: invoiceDiscount(),
+        dueDateJalali: due.valid && due.iso ? safeJalali(due.iso) : null,
         confectionerName: conf?.name,
         confectionerPhone: conf?.phone,
       });

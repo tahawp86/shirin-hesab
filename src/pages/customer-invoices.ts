@@ -1,9 +1,33 @@
 // شیرین حساب — صفحه‌ی فاکتورهای یک مشتری
 // BabyT (EAgents) — 2026-10-18
-import { api, Customer, Invoice } from "../lib/api";
-import { fmtMoney, toJalali } from "../lib/jalali";
+import {
+  api,
+  Customer,
+  CustomerSummary,
+  Invoice,
+  PaymentMethod,
+  StatementEntry,
+} from "../lib/api";
+import { fmtMoney, toJalali, todayIso } from "../lib/jalali";
 import { navigate } from "../lib/router";
-import { exportInvoicePdf } from "../lib/pdf";
+import { exportInvoicePdf, generateStatementPdf } from "../lib/pdf";
+
+/** برچسب نمایشی روش پرداخت */
+export const METHOD_LABELS: Record<PaymentMethod, string> = {
+  cash: "نقد",
+  card: "کارتخوان",
+  cheque: "چک",
+  credit: "نسیه",
+};
+
+/** فاکتور پرداخت‌نشده‌ای که سررسیدش گذشته «معوق» است */
+function isOverdue(inv: Invoice): boolean {
+  return (
+    inv.status !== "paid" &&
+    !!inv.due_date &&
+    inv.due_date.slice(0, 10) < todayIso()
+  );
+}
 
 const STYLE = `
 <style>
@@ -33,6 +57,20 @@ const STYLE = `
 .ci-page .paid, .ci-page .unpaid { display: inline-block; padding: 3px 12px; border-radius: 999px; font-size: 12.5px; line-height: 1.7; white-space: nowrap; }
 .ci-page .paid { background: #e9f5ee; }
 .ci-page .unpaid { background: #fbeeec; }
+/* سررسید و برچسب «معوق» */
+.ci-due { display: block; margin-top: 5px; font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+.ci-due.overdue { color: var(--danger); font-weight: 700; }
+.ci-overdue-badge { display: inline-block; margin-inline-start: 6px; padding: 2px 10px; border-radius: 999px; background: var(--danger); color: #fff; font-size: 11.5px; font-weight: 700; line-height: 1.7; white-space: nowrap; }
+/* نوار فیلترهای جدول فاکتورها */
+.ci-filters { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 12px; }
+.ci-filters label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
+.ci-filters label.chk { flex-direction: row; align-items: center; gap: 6px; padding-bottom: 10px; cursor: pointer; }
+.ci-filters label.chk input { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+/* سلکت (روش پرداخت / فیلتر وضعیت) — هم‌خانواده‌ی اینپوت‌ها */
+.ci-page select { font: inherit; font-size: 14px; color: var(--text); background: #fff; border: 1px solid #e2d5c0; border-radius: 10px; padding: 9px 12px; }
+.ci-page select:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 3px rgba(201, 138, 46, .18); }
+/* شرح ردیف پرداخت در صورتحساب */
+.ci-stmt-note { display: block; font-size: 11.5px; color: var(--muted); margin-top: 2px; }
 /* دکمه‌های عملیات داخل ردیف جدول */
 .ci-actions { display: flex; gap: 6px; justify-content: flex-end; }
 .ci-actions .btn { padding: 6px 12px; font-size: 13px; border-radius: 8px; }
@@ -79,6 +117,7 @@ ${STYLE}
     <div class="ci-header">
       <h2>فاکتورهای «${escapeHtml(customer.name)}»</h2>
       <button class="btn" id="ci-new-invoice">＋ فاکتور جدید</button>
+      <button class="btn ghost" id="ci-statement">صورتحساب</button>
       <button class="btn ghost" id="ci-back">← بازگشت به مشتریان</button>
     </div>
     <div class="ci-stats">
@@ -90,6 +129,25 @@ ${STYLE}
 
   <div class="card">
     <h3 class="ci-card-title">فاکتورها</h3>
+    <div class="ci-filters">
+      <label>از تاریخ
+        <input type="date" id="ci-f-from" />
+      </label>
+      <label>تا تاریخ
+        <input type="date" id="ci-f-to" />
+      </label>
+      <label>وضعیت پرداخت
+        <select id="ci-f-status">
+          <option value="all">همه</option>
+          <option value="paid">پرداخت‌شده</option>
+          <option value="unpaid">پرداخت‌نشده</option>
+        </select>
+      </label>
+      <label class="chk">
+        <input type="checkbox" id="ci-f-overdue" /> فقط معوقه‌ها
+      </label>
+      <button class="btn ghost" id="ci-f-clear" hidden>حذف فیلترها</button>
+    </div>
     <div id="ci-invoices"><p class="ci-loading">در حال بارگذاری…</p></div>
   </div>
 
@@ -98,6 +156,14 @@ ${STYLE}
     <form class="ci-pay-form" id="ci-pay-form">
       <label>مبلغ (ریال)
         <input type="text" id="ci-pay-amount" inputmode="numeric" placeholder="مثلاً ۱۵۰٬۰۰۰" autocomplete="off" />
+      </label>
+      <label>روش پرداخت
+        <select id="ci-pay-method">
+          <option value="cash">نقد</option>
+          <option value="card">کارتخوان</option>
+          <option value="cheque">چک</option>
+          <option value="credit">نسیه</option>
+        </select>
       </label>
       <label class="grow">توضیح
         <input type="text" id="ci-pay-note" placeholder="توضیح اختیاری…" />
@@ -117,22 +183,79 @@ ${STYLE}
   $("ci-new-invoice")?.addEventListener("click", () =>
     navigate("invoice-editor", { customer })
   );
+  $("ci-statement")?.addEventListener("click", () =>
+    renderCustomerStatement(root, customer)
+  );
 
   $("ci-pay-form")?.addEventListener("submit", async (e) => {
     e.preventDefault();
     const amountRaw = ($("ci-pay-amount") as HTMLInputElement | null)?.value ?? "";
     const note = ($("ci-pay-note") as HTMLInputElement | null)?.value.trim() ?? "";
+    const method = (($("ci-pay-method") as HTMLSelectElement | null)?.value ??
+      "cash") as PaymentMethod;
     const amount = parseFloat(normalizeDigits(amountRaw));
     if (!Number.isFinite(amount) || amount <= 0) {
       alert("لطفاً مبلغ معتبر وارد کنید.");
       return;
     }
     try {
-      await api.recordPayment(customer.id, amount, note);
+      await api.recordPayment(customer.id, amount, note, method);
       renderCustomerInvoices(root, customer); // رفرش صفحه
     } catch (err) {
       alert("ثبت پرداخت ناموفق بود: " + (err instanceof Error ? err.message : err));
     }
+  });
+
+  // وضعیت فیلترهای جدول (بازه‌ی تاریخ / وضعیت پرداخت / فقط معوقه‌ها) — فیلتر سمت کاربر روی لیست بارگذاری‌شده اعمال می‌شود
+  let allInvoices: Invoice[] = [];
+  const filters = {
+    from: "",
+    to: "",
+    status: "all" as "all" | "paid" | "unpaid",
+    overdueOnly: false,
+  };
+
+  function visibleInvoices(): Invoice[] {
+    return allInvoices.filter((inv) => {
+      const d = inv.date.slice(0, 10);
+      if (filters.from && d < filters.from) return false;
+      if (filters.to && d > filters.to) return false;
+      if (filters.status !== "all" && inv.status !== filters.status) return false;
+      if (filters.overdueOnly && !isOverdue(inv)) return false;
+      return true;
+    });
+  }
+
+  const fFrom = $("ci-f-from") as HTMLInputElement | null;
+  const fTo = $("ci-f-to") as HTMLInputElement | null;
+  const fStatus = $("ci-f-status") as HTMLSelectElement | null;
+  const fOverdue = $("ci-f-overdue") as HTMLInputElement | null;
+  const fClear = $("ci-f-clear") as HTMLButtonElement | null;
+
+  function syncFilters(): void {
+    filters.from = fFrom?.value ?? "";
+    filters.to = fTo?.value ?? "";
+    filters.status = (fStatus?.value ?? "all") as typeof filters.status;
+    filters.overdueOnly = fOverdue?.checked ?? false;
+    if (fClear)
+      fClear.hidden = !(
+        filters.from ||
+        filters.to ||
+        filters.status !== "all" ||
+        filters.overdueOnly
+      );
+    renderTable(visibleInvoices());
+  }
+  fFrom?.addEventListener("change", syncFilters);
+  fTo?.addEventListener("change", syncFilters);
+  fStatus?.addEventListener("change", syncFilters);
+  fOverdue?.addEventListener("change", syncFilters);
+  fClear?.addEventListener("click", () => {
+    if (fFrom) fFrom.value = "";
+    if (fTo) fTo.value = "";
+    if (fStatus) fStatus.value = "all";
+    if (fOverdue) fOverdue.checked = false;
+    syncFilters();
   });
 
   // بارگذاری خلاصه و فاکتورها
@@ -141,7 +264,8 @@ ${STYLE}
       $("ci-total-invoiced")!.textContent = fmtMoney(summary.total_invoiced);
       $("ci-total-paid")!.textContent = fmtMoney(summary.total_paid);
       $("ci-debt")!.textContent = fmtMoney(summary.debt);
-      renderTable(invoices);
+      allInvoices = invoices;
+      renderTable(visibleInvoices());
     })
     .catch((err) => {
       const box = $("ci-invoices");
@@ -158,7 +282,10 @@ ${STYLE}
     const box = $("ci-invoices");
     if (!box) return;
     if (invoices.length === 0) {
-      box.innerHTML = `<p class="ci-empty">هنوز فاکتوری برای این مشتری ثبت نشده است.</p>`;
+      box.innerHTML =
+        allInvoices.length === 0
+          ? `<p class="ci-empty">هنوز فاکتوری برای این مشتری ثبت نشده است.</p>`
+          : `<p class="ci-empty">فاکتوری با فیلترهای فعلی پیدا نشد.</p>`;
       return;
     }
     // اسکلت جدول یک‌جا ساخته می‌شود؛ ردیف‌ها با DocumentFragment و دسته‌ای اضافه می‌شوند.
@@ -191,6 +318,13 @@ ${STYLE}
     const chunk = invoices.slice(shownCount, shownCount + INVOICE_PAGE_SIZE);
     const frag = document.createDocumentFragment();
     for (const inv of chunk) {
+      const overdue = isOverdue(inv);
+      const dueHtml = inv.due_date
+        ? `<span class="ci-due${overdue ? " overdue" : ""}">سررسید: ${toJalali(inv.due_date)}</span>`
+        : "";
+      const overdueBadge = overdue
+        ? `<span class="ci-overdue-badge">معوق</span>`
+        : "";
       const tr = document.createElement("tr");
       tr.dataset.id = String(inv.id);
       tr.innerHTML = `
@@ -199,7 +333,7 @@ ${STYLE}
         <td>${fmtMoney(inv.total)}</td>
         <td><span class="${inv.status === "paid" ? "paid" : "unpaid"}">${
           inv.status === "paid" ? "پرداخت شده" : "پرداخت نشده"
-        }</span></td>
+        }</span>${overdueBadge}${dueHtml}</td>
         <td>
           <div class="ci-actions">
             <button class="btn ghost" data-act="pdf">خروجی PDF</button>
@@ -226,6 +360,9 @@ ${STYLE}
             dateJalali: toJalali(inv.date),
             customerName: customer.name,
             items: inv.items,
+            paidAmount: inv.paid_amount,
+            discountAmount: inv.discount_amount ?? 0,
+            dueDateJalali: inv.due_date ? toJalali(inv.due_date) : null,
             confectionerName: conf?.name,
             confectionerPhone: conf?.phone,
           });
@@ -261,6 +398,139 @@ ${STYLE}
     }
   }
 
+}
+
+/** نمای صورتحساب مشتری — گردش زمانی فاکتورها و پرداخت‌ها با مانده‌ی جاری
+ * (داده از کامند customer_statement؛ خروجی PDF با generateStatementPdf ایجنت۴) */
+function renderCustomerStatement(root: HTMLElement, customer: Customer): void {
+  root.innerHTML = `
+${STYLE}
+<div dir="rtl" class="ci-page">
+  <div class="card">
+    <div class="ci-header">
+      <h2>صورتحساب «${escapeHtml(customer.name)}»</h2>
+      <button class="btn" id="st-pdf">خروجی PDF</button>
+      <button class="btn ghost" id="st-back">← بازگشت به فاکتورها</button>
+    </div>
+    <div class="ci-stats">
+      <div class="ci-stat"><span class="lbl">جمع کل فاکتورها</span><span class="val" id="st-total-invoiced">…</span></div>
+      <div class="ci-stat"><span class="lbl">جمع پرداخت‌ها</span><span class="val" id="st-total-paid">…</span></div>
+      <div class="ci-stat debt"><span class="lbl">بدهکاری فعلی</span><span class="val" id="st-debt">…</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 class="ci-card-title">گردش حساب</h3>
+    <div id="st-body"><p class="ci-loading">در حال بارگذاری…</p></div>
+  </div>
+</div>`;
+
+  const q = <T extends HTMLElement = HTMLElement>(id: string): T | null =>
+    root.querySelector<T>(`#${id}`);
+
+  q("st-back")?.addEventListener("click", () =>
+    renderCustomerInvoices(root, customer)
+  );
+
+  let entries: StatementEntry[] = [];
+  let summary: CustomerSummary | null = null;
+
+  q("st-pdf")?.addEventListener("click", async (e) => {
+    const btn = e.currentTarget as HTMLButtonElement;
+    btn.disabled = true;
+    try {
+      let conf: { name: string; phone: string } | null = null;
+      try {
+        conf = await api.getConfectionerInfo();
+      } catch {
+        conf = null; // بدون اطلاعات قناد ادامه می‌دهیم
+      }
+      await generateStatementPdf({
+        customerName: customer.name,
+        customerPhone: customer.phone || undefined,
+        generatedJalali: toJalali(todayIso()),
+        rows: entries.map((en) => ({
+          dateJalali: toJalali(en.date),
+          description:
+            en.kind === "invoice"
+              ? `فاکتور شماره‌ی ${(en.invoice_number ?? 0).toLocaleString("fa-IR", { useGrouping: false })}`
+              : `پرداخت (${en.method ? METHOD_LABELS[en.method] : "نامشخص"})${en.note ? " — " + en.note : ""}`,
+          debit: en.kind === "invoice" ? en.amount : 0,
+          credit: en.kind === "payment" ? en.amount : 0,
+          balance: en.balance,
+        })),
+        totalInvoiced: summary?.total_invoiced ?? 0,
+        totalPaid: summary?.total_paid ?? 0,
+        debt: summary?.debt ?? 0,
+        confectionerName: conf?.name,
+        confectionerPhone: conf?.phone,
+      });
+    } catch (err) {
+      alert("خطا در ساخت PDF صورتحساب: " + (err instanceof Error ? err.message : err));
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  Promise.all([api.customerSummary(customer.id), api.customerStatement(customer.id)])
+    .then(([sum, ents]) => {
+      summary = sum;
+      entries = ents;
+      const ti = q("st-total-invoiced");
+      if (ti) ti.textContent = fmtMoney(sum.total_invoiced);
+      const tp = q("st-total-paid");
+      if (tp) tp.textContent = fmtMoney(sum.total_paid);
+      const db = q("st-debt");
+      if (db) db.textContent = fmtMoney(sum.debt);
+
+      const body = q("st-body");
+      if (!body) return;
+      if (ents.length === 0) {
+        body.innerHTML = `<p class="ci-empty">گردشی برای این مشتری ثبت نشده است.</p>`;
+        return;
+      }
+      const rowsHtml = ents
+        .map((en) => {
+          const desc =
+            en.kind === "invoice"
+              ? `فاکتور شماره‌ی ${(en.invoice_number ?? 0).toLocaleString("fa-IR")}`
+              : `پرداخت${en.method ? ` (${METHOD_LABELS[en.method]})` : ""}${
+                  en.note
+                    ? `<span class="ci-stmt-note">${escapeHtml(en.note)}</span>`
+                    : ""
+                }`;
+          return `<tr>
+            <td>${toJalali(en.date)}</td>
+            <td>${desc}</td>
+            <td>${en.kind === "invoice" ? fmtMoney(en.amount) : "—"}</td>
+            <td>${en.kind === "payment" ? fmtMoney(en.amount) : "—"}</td>
+            <td>${fmtMoney(en.balance)}</td>
+          </tr>`;
+        })
+        .join("");
+      body.innerHTML = `
+        <div class="ci-table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>تاریخ</th>
+              <th>شرح</th>
+              <th>بدهکار</th>
+              <th>بستانکار</th>
+              <th>مانده</th>
+            </tr>
+          </thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+        </div>`;
+    })
+    .catch((err) => {
+      const body = q("st-body");
+      if (body)
+        body.innerHTML = `<p class="ci-error">خطا در بارگذاری: ${escapeHtml(
+          err instanceof Error ? err.message : String(err)
+        )}</p>`;
+    });
 }
 
 function escapeHtml(s: string): string {

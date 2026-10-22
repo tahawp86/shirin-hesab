@@ -47,6 +47,10 @@ export function renderCustomers(root: HTMLElement): void {
       .modal-box .field-error { border-color: var(--danger); box-shadow: 0 0 0 3px rgba(192, 57, 43, .12); }
       .field-err { color: var(--danger); font-size: 12.5px; margin: -2px 0 0; }
       .modal-actions { display: flex; gap: 8px; justify-content: flex-start; margin-top: 6px; }
+      .cust-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+      .cust-toolbar input { flex: 1 1 220px; }
+      #debtor-toggle.on { background: var(--accent); color: #fff; }
+      #cust-count { color: var(--muted); font-size: 12.5px; }
     </style>
     <div class="cust-page">
     <div class="page-head">
@@ -55,6 +59,11 @@ export function renderCustomers(root: HTMLElement): void {
     </div>
     <div class="card">
       <p class="hint">برای مشاهده‌ی فاکتورهای هر مشتری، روی ردیف آن دابل‌کلیک کنید.</p>
+      <div class="cust-toolbar">
+        <input id="customer-search" type="text" placeholder="جست‌وجو بر اساس نام یا شماره تلفن…" autocomplete="off" />
+        <button class="btn ghost" id="debtor-toggle" aria-pressed="false">مشتریان بدهکار</button>
+        <span id="cust-count"></span>
+      </div>
       <table>
         <thead>
           <tr><th>نام</th><th>تلفن</th><th>آدرس</th><th></th></tr>
@@ -111,6 +120,67 @@ export function renderCustomers(root: HTMLElement): void {
   let editing: Customer | null = null;
   let visibleCount = PAGE_SIZE;
 
+  // جست‌وجوی زنده (نام/تلفن) + فیلتر سریع «مشتریان بدهکار» (0.8.0)
+  const searchIn = root.querySelector<HTMLInputElement>("#customer-search")!;
+  const debtorBtn = root.querySelector<HTMLButtonElement>("#debtor-toggle")!;
+  const countEl = root.querySelector<HTMLElement>("#cust-count")!;
+  let query = "";
+  let debtorOnly = false;
+  let debtorIds: Set<number> | null = null;
+  let debtorLoading = false;
+
+  function normSearch(s: string): string {
+    return s
+      .replace(/[۰-۹]/g, (d) => String("۰۱۲۳۴۵۶۷۸۹".indexOf(d)))
+      .replace(/[٠-٩]/g, (d) => String("٠١٢٣٤٥٦٧٨٩".indexOf(d)))
+      .replace(/[\s\-]/g, "")
+      .toLowerCase();
+  }
+
+  function getView(): Customer[] {
+    let list = customers;
+    if (debtorOnly && debtorIds) list = list.filter((c) => debtorIds!.has(c.id));
+    const q = normSearch(query);
+    if (q) {
+      list = list.filter(
+        (c) => normSearch(c.name).includes(q) || normSearch(c.phone).includes(q)
+      );
+    }
+    return list;
+  }
+
+  searchIn.addEventListener("input", () => {
+    query = searchIn.value;
+    visibleCount = PAGE_SIZE;
+    paint();
+  });
+
+  debtorBtn.addEventListener("click", () => {
+    void (async () => {
+      debtorOnly = !debtorOnly;
+      debtorBtn.classList.toggle("on", debtorOnly);
+      debtorBtn.setAttribute("aria-pressed", String(debtorOnly));
+      if (debtorOnly && !debtorIds && !debtorLoading) {
+        debtorLoading = true;
+        debtorBtn.disabled = true;
+        try {
+          const ds = await api.reportDebtors();
+          debtorIds = new Set(ds.map((d) => d.customer_id));
+        } catch {
+          alert("خطا در دریافت فهرست بدهکاران.");
+          debtorOnly = false;
+          debtorBtn.classList.remove("on");
+          debtorBtn.setAttribute("aria-pressed", "false");
+        } finally {
+          debtorLoading = false;
+          debtorBtn.disabled = false;
+        }
+      }
+      visibleCount = PAGE_SIZE;
+      paint();
+    })();
+  });
+
   function buildRow(c: Customer): HTMLTableRowElement {
     const tr = document.createElement("tr");
 
@@ -148,13 +218,26 @@ export function renderCustomers(root: HTMLElement): void {
 
   function paint(): void {
     // ساخت همه‌ی ردیف‌های این صفحه در یک Fragment و الحاق یک‌جای آن‌ها به DOM
+    const view = getView();
     const frag = document.createDocumentFragment();
-    for (const c of customers.slice(0, visibleCount)) {
+    for (const c of view.slice(0, visibleCount)) {
       frag.appendChild(buildRow(c));
     }
     tbody.replaceChildren(frag);
-    emptyMsg.style.display = customers.length ? "none" : "";
-    moreWrap.style.display = customers.length > visibleCount ? "" : "none";
+    if (customers.length === 0) {
+      emptyMsg.textContent = "هنوز مشتری‌ای ثبت نشده است.";
+      emptyMsg.style.display = "";
+    } else if (view.length === 0) {
+      emptyMsg.textContent = "مشتری‌ای مطابق جست‌وجو پیدا نشد.";
+      emptyMsg.style.display = "";
+    } else {
+      emptyMsg.style.display = "none";
+    }
+    moreWrap.style.display = view.length > visibleCount ? "" : "none";
+    countEl.textContent =
+      view.length && (query || debtorOnly)
+        ? `${view.length.toLocaleString("fa-IR")} مشتری`
+        : "";
   }
 
   function openModal(c?: Customer): void {
@@ -190,7 +273,7 @@ export function renderCustomers(root: HTMLElement): void {
       } else {
         const created = await api.addCustomer(name, phone, address);
         customers.push(created);
-        visibleCount = customers.length; // مشتری تازه مثل قبل بلافاصله در لیست دیده شود
+        visibleCount = getView().length; // مشتری تازه مثل قبل بلافاصله در لیست دیده شود
       }
       closeModal();
       paint();
