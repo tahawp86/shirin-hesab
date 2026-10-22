@@ -8,7 +8,7 @@ import {
   PaymentMethod,
   StatementEntry,
 } from "../lib/api";
-import { fmtMoney, toJalali, todayIso } from "../lib/jalali";
+import { dueDateDisplay, fmtMoney, toJalali, todayIso } from "../lib/jalali";
 import { navigate } from "../lib/router";
 import { exportInvoicePdf, generateStatementPdf } from "../lib/pdf";
 
@@ -362,7 +362,14 @@ ${STYLE}
             items: inv.items,
             paidAmount: inv.paid_amount,
             discountAmount: inv.discount_amount ?? 0,
-            dueDateJalali: inv.due_date ? toJalali(inv.due_date) : null,
+            discountPct: (() => {
+              const sub = inv.items.reduce(
+                (s, it) => s + Math.round(it.qty * it.unit_price * (1 - Math.min(100, Math.max(0, it.discount_pct ?? 0)) / 100)),
+                0
+              );
+              return inv.discount_amount && sub > 0 ? (inv.discount_amount / sub) * 100 : 0;
+            })(),
+            dueDateJalali: dueDateDisplay(inv.due_date),
             confectionerName: conf?.name,
             confectionerPhone: conf?.phone,
           });

@@ -665,8 +665,10 @@ pub fn create_invoice(
     items: Vec<NewItem>,
     invoice_number: Option<i64>,
     discount_amount: f64,
-    due_date: String,
+    due_date: Option<String>,
 ) -> Result<InvoiceView, String> {
+    // سررسید خالی (null از فرانت) یعنی بدون سررسید
+    let due_date = due_date.unwrap_or_default();
     let mut conn = lock(&state)?;
     let tx = conn
         .transaction()
@@ -738,8 +740,10 @@ pub fn update_invoice(
     id: i64,
     items: Vec<NewItem>,
     discount_amount: f64,
-    due_date: String,
+    due_date: Option<String>,
 ) -> Result<(), String> {
+    // سررسید خالی (null از فرانت) یعنی بدون سررسید
+    let due_date = due_date.unwrap_or_default();
     let mut conn = lock(&state)?;
     let tx = conn
         .transaction()
@@ -902,8 +906,10 @@ pub fn report_top_products(
     state: State<'_, DbState>,
     from: String,
     to: String,
-    limit: i64,
+    limit: Option<i64>,
 ) -> Result<Vec<TopProduct>, String> {
+    // فرانت ممکن است limit نفرستد — پیش‌فرض ۱۰
+    let limit = limit.unwrap_or(10);
     let conn = lock(&state)?;
     // قیمت خرید هر محصول (تطبیق با نام؛ نبود محصول = ۰)
     let mut cost_map: std::collections::HashMap<String, f64> = std::collections::HashMap::new();

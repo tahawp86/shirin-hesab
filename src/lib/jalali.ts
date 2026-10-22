@@ -76,6 +76,45 @@ function latinDigits(s: string): string {
     .replace(/[٠-٩]/g, (d) => String(AR_D.indexOf(d)));
 }
 
+/**
+ * نرمال‌سازی ورودی سررسید کاربر برای ارسال به بک‌اند:
+ * خروجی یا رشته‌ی خالی است (بدون سررسید) یا متن شمسی «YYYY/MM/DD» با ارقام لاتین و صفرگذاری کامل.
+ * مقدار نامعتبر = null. (قرارداد تازه: dueDate هیچ‌وقت null فرستاده نمی‌شود.)
+ */
+export function normalizeDueDateInput(text: string): string | null {
+  const t = latinDigits(text.trim()).replace(/-/g, "/");
+  if (t === "") return "";
+  const m = /^(\d{4})\/(\d{1,2})\/(\d{1,2})$/.exec(t);
+  if (!m) return null;
+  const jy = Number(m[1]);
+  const jm = Number(m[2]);
+  const jd = Number(m[3]);
+  if (jy < 1200 || jy > 1600 || jm < 1 || jm > 12) return null;
+  const maxDay = jm <= 6 ? 31 : 30;
+  if (jd < 1 || jd > maxDay) return null;
+  const p2 = (n: number) => String(n).padStart(2, "0");
+  return `${jy}/${p2(jm)}/${p2(jd)}`;
+}
+
+const JALALI_TEXT_RE = /^\d{4}\/\d{2}\/\d{2}$/;
+
+/**
+ * آماده‌سازی سررسید ذخیره‌شده برای نمایش شمسی:
+ * قالب تازه (متن شمسی YYYY/MM/DD) همان‌طور با ارقام فارسی؛ قالب قدیمی ISO میلادی تبدیل می‌شود.
+ */
+export function dueDateDisplay(due: string | null | undefined): string | null {
+  if (!due) return null;
+  const lat = latinDigits(due.trim());
+  if (JALALI_TEXT_RE.test(lat)) {
+    return lat.replace(/\d/g, (d) => FA_D[Number(d)]);
+  }
+  try {
+    return toJalali(due);
+  } catch {
+    return due;
+  }
+}
+
 /** پارس ورودی متنی شمسی کاربر (مثل «۱۴۰۴/۹/۱») به ISO؛ اگر نامعتبر بود null */
 export function parseJalaliInput(text: string): string | null {
   const parts = latinDigits(text.trim()).split(/[/\-.]/).map((p) => p.trim());

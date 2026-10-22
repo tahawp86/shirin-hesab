@@ -222,15 +222,14 @@ ${STYLE}
     }
   }
 
-  function drawSales(
-    sales: { total_sales: number; invoice_count: number; daily: DailySale[] },
-    from: string,
-    to: string
-  ): void {
+  function drawSales(daily: DailySale[], from: string, to: string): void {
     const body = $("rep-sales-body");
     if (!body) return;
+    // بک‌اند فقط آرایه‌ی روزها را می‌دهد؛ جمع فروش و تعداد فاکتور از همان حساب می‌شود
+    const totalSales = daily.reduce((s, d) => s + d.total, 0);
+    const invoiceCount = daily.reduce((s, d) => s + d.count, 0);
     // صفرپر کردن روزهای بدون فروش تا نمودار پیوسته باشد
-    const byDate = new Map(sales.daily.map((d) => [d.date, d]));
+    const byDate = new Map(daily.map((d) => [d.date, d]));
     const days: DailySale[] = [];
     const span = Math.min(diffDays(from, to), 366);
     for (let i = 0; i <= span; i++) {
@@ -240,8 +239,8 @@ ${STYLE}
     chartDays = days;
     body.innerHTML = `
       <div class="rep-stats">
-        <div class="rep-stat"><span class="lbl">جمع فروش</span><span class="val">${fmtMoney(sales.total_sales)}</span></div>
-        <div class="rep-stat"><span class="lbl">تعداد فاکتور</span><span class="val">${faNum(sales.invoice_count)}</span></div>
+        <div class="rep-stat"><span class="lbl">جمع فروش</span><span class="val">${fmtMoney(totalSales)}</span></div>
+        <div class="rep-stat"><span class="lbl">تعداد فاکتور</span><span class="val">${faNum(invoiceCount)}</span></div>
       </div>
       <canvas class="rep-chart" id="rep-chart"></canvas>
       <div class="rep-chart-cap" id="rep-chart-cap">فروش روزانه — نشانگر را روی ستون‌ها ببرید</div>
@@ -382,7 +381,13 @@ ${STYLE}
     try {
       const ds = await api.reportDebtors();
       debtRows = ds
-        .map((d) => ({ ...d, age: Math.max(0, diffDays(d.oldest_date, today)) }))
+        .map((d) => ({
+          ...d,
+          // گارد تاریخ خالی: مشتری بدهکار بدون تاریخ معتبر (رشته‌ی خالی از بک‌اند)
+          age: d.oldest_unpaid_date
+            ? Math.max(0, diffDays(d.oldest_unpaid_date, today))
+            : 0,
+        }))
         .sort((a, b) => b.debt - a.debt);
       const csvBtn = $<HTMLButtonElement>("rep-debt-csv");
       if (csvBtn) csvBtn.disabled = debtRows.length === 0;
@@ -406,9 +411,8 @@ ${STYLE}
           const b = ageBucket(d.age);
           return `<tr>
             <td>${esc(d.name)}</td>
-            <td>${esc(d.phone)}</td>
             <td>${fmtMoney(d.debt)}</td>
-            <td>${toJalali(d.oldest_date)}</td>
+            <td>${d.oldest_unpaid_date ? toJalali(d.oldest_unpaid_date) : "—"}</td>
             <td>${faNum(d.age)} روز</td>
             <td><span class="rep-age ${b.cls}">${b.label}</span></td>
           </tr>`;
@@ -424,7 +428,7 @@ ${STYLE}
         </div>
         <p class="rep-hint" style="margin:0 0 10px">جمع کل بدهی‌ها: <b>${fmtMoney(totalDebt)}</b> از ${faNum(debtRows.length)} مشتری</p>
         <table>
-          <thead><tr><th>مشتری</th><th>تلفن</th><th>جمع بدهی</th><th>قدیمی‌ترین بدهی</th><th>قدمت</th><th>دسته‌بندی</th></tr></thead>
+          <thead><tr><th>مشتری</th><th>جمع بدهی</th><th>قدیمی‌ترین بدهی</th><th>قدمت</th><th>دسته‌بندی</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>`;
     } catch (e) {
@@ -435,13 +439,12 @@ ${STYLE}
   $("rep-debt-csv")?.addEventListener("click", () => {
     downloadCsv(
       "debtors.csv",
-      ["مشتری", "تلفن", "جمع بدهی (ریال)", "قدیمی‌ترین بدهی (میلادی)", "قدیمی‌ترین بدهی (شمسی)", "قدمت (روز)", "دسته‌بندی"],
+      ["مشتری", "جمع بدهی (ریال)", "قدیمی‌ترین بدهی (میلادی)", "قدیمی‌ترین بدهی (شمسی)", "قدمت (روز)", "دسته‌بندی"],
       debtRows.map((d) => [
         d.name,
-        d.phone,
         d.debt,
-        d.oldest_date,
-        toJalali(d.oldest_date),
+        d.oldest_unpaid_date,
+        d.oldest_unpaid_date ? toJalali(d.oldest_unpaid_date) : "",
         d.age,
         ageBucket(d.age).label,
       ])

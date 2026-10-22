@@ -46,6 +46,7 @@ export interface InvoicePdfData {
   items: InvoiceItem[];
   paidAmount?: number;        // مبلغ پرداخت‌شده (برای باکس جمع‌بندی)
   discountAmount?: number;    // تخفیف کلی فاکتور (مبلغی)
+  discountPct?: number;       // درصد تخفیف کلی (فقط برای نمایش کنار مبلغ)
   dueDateJalali?: string | null; // تاریخ سررسید شمسی نمایشی (اختیاری)
   confectionerName?: string;  // نام قناد (صادرکننده)
   confectionerPhone?: string; // تلفن قناد
@@ -473,8 +474,10 @@ export async function renderInvoicePages(
   const paid = Math.max(0, Math.round(data.paidAmount ?? 0));
   const sumRows: Array<[string, string]> = [];
   if (invDiscount > 0) {
+    const pct = data.discountPct ?? 0;
+    const pctLabel = pct > 0 ? ` (${faPlain(Math.round(pct * 100) / 100)}٪)` : "";
     sumRows.push(["جمع ردیف‌ها", faGrouped(subtotal) + " ریال"]);
-    sumRows.push(["تخفیف کلی", "−" + faGrouped(invDiscount) + " ریال"]);
+    sumRows.push(["تخفیف کلی" + pctLabel, "−" + faGrouped(invDiscount) + " ریال"]);
   }
   sumRows.push(["جمع کل", faGrouped(grand) + " ریال"]);
   sumRows.push(["پرداخت‌شده", faGrouped(paid) + " ریال"]);

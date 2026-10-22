@@ -45,11 +45,12 @@ export interface UpdateInfo2 { version: string; notes_fa: string; mandatory: boo
 export type UpdateReport =
   | { status: "ok"; prev_version: string; new_version: string; changelog: string }
   | { status: "failed" | "rolled_back"; detail: string };
-// گزارش‌ها (0.8.0 — بک‌اند: EAgent1) — قرارداد ثابت با صفحه‌ی reports.ts
+// گزارش‌ها (0.8.0 — بک‌اند: EAgent1) — قرارداد واقعی db.rs:
+// report_sales آرایه‌ی روزهای فروش برمی‌گرداند (جمع‌ها سمت فرانت حساب می‌شوند)،
+// report_top_products کلید limit می‌خواهد، و DebtorRow تلفن ندارد.
 export interface DailySale { date: string; total: number; count: number; }
-export interface SalesReport { total_sales: number; invoice_count: number; daily: DailySale[]; }
 export interface TopProduct { name: string; qty: number; amount: number; profit: number; }
-export interface Debtor { customer_id: number; name: string; phone: string; debt: number; oldest_date: string; }
+export interface Debtor { customer_id: number; name: string; debt: number; oldest_unpaid_date: string; }
 
 export const api = {
   listCustomers: (): Promise<Customer[]> => invoke("list_customers"),
@@ -71,19 +72,19 @@ export const api = {
     invoke("list_invoices", { customerId }),
   createInvoice: (
     customerId: number, items: InvoiceItem[], invoiceNumber?: number,
-    opts?: { discountAmount?: number; dueDate?: string | null }
+    opts?: { discountAmount?: number; dueDate?: string }
   ): Promise<Invoice> =>
     invoke("create_invoice", {
       customerId, items, invoiceNumber,
-      discountAmount: opts?.discountAmount, dueDate: opts?.dueDate,
+      discountAmount: opts?.discountAmount, dueDate: opts?.dueDate ?? "", // هیچ‌وقت null نمی‌رود؛ خالی = بدون سررسید
     }),
   updateInvoice: (
     id: number, items: InvoiceItem[],
-    opts?: { discountAmount?: number; dueDate?: string | null }
+    opts?: { discountAmount?: number; dueDate?: string }
   ): Promise<void> =>
     invoke("update_invoice", {
       id, items,
-      discountAmount: opts?.discountAmount, dueDate: opts?.dueDate,
+      discountAmount: opts?.discountAmount, dueDate: opts?.dueDate ?? "",
     }),
   deleteInvoice: (id: number): Promise<void> => invoke("delete_invoice", { id }),
 
@@ -119,10 +120,10 @@ export const api = {
   clearUserLogo: (): Promise<void> => invoke("clear_user_logo"),
 
   // گزارش‌ها (0.8.0 — بک‌اند: EAgent1)
-  reportSales: (from: string, to: string): Promise<SalesReport> =>
+  reportSales: (from: string, to: string): Promise<DailySale[]> =>
     invoke("report_sales", { from, to }),
-  reportTopProducts: (from: string, to: string): Promise<TopProduct[]> =>
-    invoke("report_top_products", { from, to }),
+  reportTopProducts: (from: string, to: string, limit = 10): Promise<TopProduct[]> =>
+    invoke("report_top_products", { from, to, limit }),
   reportDebtors: (): Promise<Debtor[]> => invoke("report_debtors"),
 
   // پشتیبان‌گیری و انتقال (بک‌اند: EAgent1)

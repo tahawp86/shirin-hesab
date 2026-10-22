@@ -1,6 +1,6 @@
 // شیرین حساب — ویرایشگر فاکتور (ثبت جدید / ویرایش) + خروجی PDF
 import { api, type Customer, type Invoice, type InvoiceItem, type Product } from "../lib/api";
-import { fmtMoney, parseJalaliInput, toJalali, todayIso } from "../lib/jalali";
+import { dueDateDisplay, fmtMoney, normalizeDueDateInput, toJalali, todayIso } from "../lib/jalali";
 import { navigate } from "../lib/router";
 import { exportInvoicePdf } from "../lib/pdf";
 
@@ -117,8 +117,15 @@ async function initEditor(root: HTMLElement, customer: Customer, invoice?: Invoi
   const isEdit = !!invoice;
   const numberLabel = invoice ? faNum(invoice.invoice_number) : "خودکار";
   const dateLabel = invoice ? safeJalali(invoice.date) : toJalali(todayIso());
-  const initDiscount = invoice?.discount_amount && invoice.discount_amount > 0 ? String(invoice.discount_amount) : "";
-  const initDue = invoice?.due_date ? safeJalali(invoice.due_date) : "";
+  // درصد تخفیف کلی: در حالت ویرایش از روی مبلغ ذخیره‌شده و جمع ردیف‌ها برگردانده می‌شود
+  // (با دقت کامل نگه داشته می‌شود تا مبلغ ذخیره‌شده بی‌تغییر بماند؛ نمایش در فیلد ۲ رقم اعشار است)
+  const initSubtotal = rows.reduce((s, r) => s + rowTotal(r), 0);
+  let discountPctState = 0;
+  if (invoice?.discount_amount && invoice.discount_amount > 0 && initSubtotal > 0) {
+    discountPctState = (invoice.discount_amount / initSubtotal) * 100;
+  }
+  const initDiscountPct = discountPctState ? String(Math.round(discountPctState * 100) / 100) : "";
+  const initDue = dueDateDisplay(invoice?.due_date) ?? "";
 
   root.innerHTML = `
   <style>
@@ -174,7 +181,7 @@ async function initEditor(root: HTMLElement, customer: Customer, invoice?: Invoi
       <span class="grand">مبلغ نهایی فاکتور: <b id="grandTotal">${fmtMoney(0)}</b></span>
     </div>
     <div class="inv-opts">
-      <div><span class="lbl">تخفیف کلی فاکتور (ریال):</span><input id="invDiscount" inputmode="numeric" placeholder="۰" value="${escapeHtml(initDiscount)}"></div>
+      <div><span class="lbl">تخفیف کلی فاکتور ٪:</span><input id="invDiscount" inputmode="decimal" placeholder="۰" value="${escapeHtml(initDiscountPct)}"><span class="sub-total" id="discountEq"></span></div>
       <div><span class="lbl">تاریخ سررسید:</span><input id="dueDate" placeholder="۱۴۰۴/۰۹/۰۱" value="${escapeHtml(initDue)}"></div>
       <span class="sub-total">جمع ردیف‌ها: <b id="subTotal">${fmtMoney(0)}</b></span>
     </div>
@@ -193,6 +200,7 @@ async function initEditor(root: HTMLElement, customer: Customer, invoice?: Invoi
   const errEl = root.querySelector<HTMLElement>("#formErr")!;
   const warnBox = root.querySelector<HTMLElement>("#warnBox")!;
   const discountInput = root.querySelector<HTMLInputElement>("#invDiscount")!;
+  const discountEqEl = root.querySelector<HTMLElement>("#discountEq")!;
   const dueInput = root.querySelector<HTMLInputElement>("#dueDate")!;
 
   const productOptions = (selectedId: number | null): string => {
@@ -234,10 +242,11 @@ async function initEditor(root: HTMLElement, customer: Customer, invoice?: Invoi
       <td class="c">${del}</td></tr>`;
   }
 
-  const invoiceDiscount = (): number => {
-    const v = Number(toLatinDigits(discountInput.value.trim()).replace(/,/g, ""));
-    return Number.isFinite(v) && v > 0 ? Math.round(v) : 0;
-  };
+  const subtotalRows = (): number => rows.reduce((s, r) => s + rowTotal(r), 0);
+
+  /** مبلغ تخفیف کلی از روی درصد و جمع ردیف‌ها — همین مبلغ در discount_amount ذخیره می‌شود */
+  const invoiceDiscountAmount = (): number =>
+    Math.round((subtotalRows() * clampPct(discountPctState)) / 100);
 
   /** سهم خالص یک فاکتور از بدهی = جمعش منهای ردیف‌های «مانده حساب قبلی» (جلوگیری از شمارش مضاعف) */
   const carryNet = (items: Array<{ name: string; unit_price: number; qty: number; discount_pct?: number }>): number =>
@@ -267,10 +276,12 @@ async function initEditor(root: HTMLElement, customer: Customer, invoice?: Invoi
   }
 
   function updateTotals(): void {
-    const subtotal = rows.reduce((s, r) => s + rowTotal(r), 0);
-    const finalTotal = Math.max(0, subtotal - invoiceDiscount());
+    const subtotal = subtotalRows();
+    const discAmt = invoiceDiscountAmount();
+    const finalTotal = Math.max(0, subtotal - discAmt);
     subEl.textContent = fmtMoney(subtotal);
     grandEl.textContent = fmtMoney(finalTotal);
+    discountEqEl.textContent = discAmt > 0 ? `معادل ${fmtMoney(discAmt)}` : "";
     const warns = computeWarnings(finalTotal);
     warnBox.innerHTML = warns.map((w) => `<div>⚠ ${w}</div>`).join("");
     warnBox.hidden = warns.length === 0;
@@ -342,7 +353,10 @@ async function initEditor(root: HTMLElement, customer: Customer, invoice?: Invoi
     }
   });
 
-  discountInput.addEventListener("input", updateTotals);
+  discountInput.addEventListener("input", () => {
+    discountPctState = clampPct(Number(toLatinDigits(discountInput.value.trim())) || 0);
+    updateTotals();
+  });
 
   root.querySelector("#addProduct")!.addEventListener("click", () => {
     addRow({ manual: false, productId: null, name: "", unitPrice: 0, qty: 1, discountPct: 0, unit: "", stock: null });
@@ -363,13 +377,8 @@ async function initEditor(root: HTMLElement, customer: Customer, invoice?: Invoi
         discount_pct: isBalanceRow(r.name) ? 0 : clampPct(r.discountPct),
       }));
 
-  /** سررسید واردشده را به ISO برمی‌گرداند؛ رشته‌ی خالی = بدون سررسید، مقدار نامعتبر = null دوم */
-  const readDueDate = (): { iso: string | null; valid: boolean } => {
-    const text = dueInput.value.trim();
-    if (!text) return { iso: null, valid: true };
-    const iso = parseJalaliInput(text);
-    return iso ? { iso, valid: true } : { iso: null, valid: false };
-  };
+  /** سررسید برای ارسال: همیشه رشته — متن شمسی نرمال «YYYY/MM/DD» با ارقام لاتین یا رشته‌ی خالی؛ نامعتبر = null */
+  const readDueDate = (): string | null => normalizeDueDateInput(dueInput.value);
 
   const saveBtn = root.querySelector<HTMLButtonElement>("#saveBtn")!;
   saveBtn.addEventListener("click", async () => {
@@ -379,9 +388,9 @@ async function initEditor(root: HTMLElement, customer: Customer, invoice?: Invoi
       errEl.textContent = "حداقل یک ردیف معتبر (نام + تعداد بیشتر از صفر) وارد کنید.";
       return;
     }
-    const due = readDueDate();
-    if (!due.valid) {
-      errEl.textContent = "تاریخ سررسید معتبر نیست؛ مثال: ۱۴۰۴/۰۹/۰۱ (یا خالی بگذارید).";
+    const dueStr = readDueDate();
+    if (dueStr === null) {
+      errEl.textContent = "تاریخ سررسید معتبر نیست؛ قالب درست: ۱۴۰۴/۰۹/۰۱ (یا خالی بگذارید).";
       return;
     }
     // شماره فاکتور: خالی = خودکار (بک‌اند max+1 می‌دهد)، وگرنه عدد واردشده
@@ -398,7 +407,7 @@ async function initEditor(root: HTMLElement, customer: Customer, invoice?: Invoi
         invoiceNumber = n;
       }
     }
-    const opts = { discountAmount: invoiceDiscount(), dueDate: due.iso };
+    const opts = { discountAmount: invoiceDiscountAmount(), dueDate: dueStr };
     saveBtn.disabled = true;
     try {
       if (invoice) await api.updateInvoice(invoice.id, items, opts);
@@ -433,7 +442,7 @@ async function initEditor(root: HTMLElement, customer: Customer, invoice?: Invoi
       const raw = numInput ? toLatinDigits(numInput.value.trim()) : "";
       const n = Math.floor(Number(raw));
       const hasNum = raw !== "" && Number.isFinite(n) && n > 0;
-      const due = readDueDate();
+      const dueStr = readDueDate();
       await exportInvoicePdf({
         invoiceNumber: invoice ? faNum(invoice.invoice_number) : hasNum ? faNum(n) : "خودکار",
         fileNumber: invoice ? String(invoice.invoice_number) : hasNum ? String(n) : "new",
@@ -441,8 +450,9 @@ async function initEditor(root: HTMLElement, customer: Customer, invoice?: Invoi
         customerName: customer.name,
         items,
         paidAmount: invoice ? invoice.paid_amount : 0,
-        discountAmount: invoiceDiscount(),
-        dueDateJalali: due.valid && due.iso ? safeJalali(due.iso) : null,
+        discountAmount: invoiceDiscountAmount(),
+        discountPct: discountPctState,
+        dueDateJalali: dueStr ? dueDateDisplay(dueStr) : null,
         confectionerName: conf?.name,
         confectionerPhone: conf?.phone,
       });

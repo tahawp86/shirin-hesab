@@ -1,6 +1,6 @@
 [package]
 name = "shirin-hesab"
-version = "0.8.0"
+version = "0.8.1"
 edition = "2021"
 description = "شیرین حساب — مدیریت حساب فروشگاه کیک و شیرینی"
 
