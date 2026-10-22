@@ -8,8 +8,11 @@
         نام و قالبش دقیقاً همان مدل قبلی است تا نصب‌های فعلی (موتور قدیمی که
         لیست ریلیزها را اسکن می‌کند) هم بتوانند با همین فایل آپدیت شوند.
     ShirinHesab-Update-v<version>-from-<prev>.zip
-        بسته‌ی «دلتا» از نسخه‌ی قبلی: فقط فایل‌های تغییریافته/جدید +
+        بسته‌ی «دلتا» از نسخه‌ی قبلی: همه‌ی فایل‌های بیلد جاری +
         فهرست removed در update_info.json (+ manifest.json کامل بیلد جاری).
+        (محتوای کامل است، نه فقط فایل‌های تغییریافته: اعتبارسنج دانلودِ
+        برنامه همه‌ی فایل‌های فید را داخل بسته می‌خواهد؛ فهرست removed
+        همچنان از روی اختلاف با مانیفست قبلی حساب می‌شود.)
     update-feed.json
         فید ثابت موتور جدید: نسخه، تاریخ انتشار، متن تغییرات فارسی (از مدخل
         همین نسخه در CHANGELOG_FA.md)، آدرس مطلق و هش هر دو بسته و فهرست
@@ -203,14 +206,16 @@ def main() -> int:
     # بسته‌ی دلتا از نسخه‌ی قبلی (اگر مانیفست قبلی هست)
     delta_pkg = None
     if prev is not None and prev_version:
-        included, removed = diff_manifests(current_files, prev)
+        # فقط فهرست removed از روی اختلاف حساب می‌شود؛ محتوای بسته کامل است
+        # (اعتبارسنج دانلودِ برنامه همه‌ی فایل‌های فید را داخل بسته می‌خواهد).
+        _changed, removed = diff_manifests(current_files, prev)
         delta_name = f"{args.app}-Update-v{args.version}-from-{prev_version}.zip"
         delta_path = out_dir / delta_name
         write_package(
             delta_path,
             build_dir,
-            included,
-            make_update_info(args.app, args.version, prev_version, included, removed),
+            current_files,
+            make_update_info(args.app, args.version, prev_version, current_files, removed),
             manifest,
         )
         delta_pkg = {
@@ -221,7 +226,7 @@ def main() -> int:
         }
         print(
             f"{delta_name}: بسته‌ی دلتا از {prev_version} — "
-            f"{len(included)} فایل، {len(removed)} حذف‌شده، {delta_pkg['size']} بایت"
+            f"{len(current_files)} فایل (کامل)، {len(removed)} حذف‌شده، {delta_pkg['size']} بایت"
         )
     else:
         print("مانیفست قبلی نیست؛ بسته‌ی دلتا ساخته نشد.")
