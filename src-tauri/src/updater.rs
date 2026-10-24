@@ -358,7 +358,9 @@ fn download_file(
     Ok(DlOutcome::Done)
 }
 
-/// اعتبارسنجی ZIP: مانیفست (app + نسخه = نسخه‌ی فید) + تطبیق هش تک‌فایل‌ها با فید
+/// اعتبارسنجی ZIP: مانیفست (app + نسخه = نسخه‌ی فید) + حضور و هش فایل‌های داخل خود بسته.
+/// مبنا فهرست `files` مانیفستِ بسته است، نه کل فهرست فید — وگرنه بسته‌ی دلتا (فقط
+/// فایل‌های تغییریافته) همیشه رد می‌شود؛ برای فایل‌های مشترک با فید، هش با فید هم تطبیق داده می‌شود.
 fn validate_package(zip_path: &Path, feed: &Feed) -> Result<(), String> {
     let file = std::fs::File::open(zip_path)
         .map_err(|e| format!("باز کردن بسته‌ی آپدیت ناموفق بود: {e}"))?;
@@ -381,7 +383,34 @@ fn validate_package(zip_path: &Path, feed: &Feed) -> Result<(), String> {
     if manifest.get("version").and_then(|v| v.as_str()) != Some(feed.version.as_str()) {
         return Err("نسخه‌ی داخل بسته با فید آپدیت هماهنگ نیست.".to_string());
     }
-    for (path, sha) in &feed.files {
+    // فهرست فایل‌های داخل خود بسته از مانیفست خوانده می‌شود
+    let manifest_files = manifest
+        .get("files")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if manifest_files.is_empty() {
+        return Err("فهرست فایل‌های داخل بسته‌ی آپدیت خالی است.".to_string());
+    }
+    let feed_map: std::collections::HashMap<&str, &str> = feed
+        .files
+        .iter()
+        .map(|(p, s)| (p.as_str(), s.as_str()))
+        .collect();
+    for f in &manifest_files {
+        let path = f.get("path").and_then(|v| v.as_str()).unwrap_or("");
+        let sha = f.get("sha256").and_then(|v| v.as_str()).unwrap_or("");
+        if path.is_empty() {
+            return Err("مانیفست بسته‌ی آپدیت ناقص است.".to_string());
+        }
+        // فایل مشترک با فید: هش مانیفست باید با هش فید یکی باشد
+        if let Some(feed_sha) = feed_map.get(path) {
+            if !feed_sha.is_empty() && !sha.eq_ignore_ascii_case(feed_sha) {
+                return Err(format!(
+                    "هش فایل «{path}» با فید هماهنگ نیست؛ بسته خراب است."
+                ));
+            }
+        }
         let entry_name = format!("files/{path}");
         let mut entry = ar
             .by_name(&entry_name)
@@ -401,7 +430,7 @@ fn validate_package(zip_path: &Path, feed: &Feed) -> Result<(), String> {
             let h = format!("{:x}", hasher.finalize());
             if !h.eq_ignore_ascii_case(sha) {
                 return Err(format!(
-                    "هش فایل «{path}» با فید هماهنگ نیست؛ بسته خراب است."
+                    "هش فایل «{path}» با مانیفست بسته هماهنگ نیست؛ بسته خراب است."
                 ));
             }
         }
